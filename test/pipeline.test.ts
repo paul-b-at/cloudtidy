@@ -5,7 +5,7 @@ import path from "node:path";
 import { OllamaTier2 } from "../src/classify/llm";
 import { extractText } from "../src/extract";
 import { ocrText } from "../src/extract/ocr";
-import { pdfText } from "../src/extract/pdf";
+import { viaUnpdf } from "../src/extract/pdf";
 import { readHistory, undoMoves } from "../src/history";
 import { assertWritable } from "../src/paths";
 import { processInbox } from "../src/pipeline";
@@ -54,15 +54,9 @@ describe("extractText", () => {
     expect(result.text).toContain("Größe");
   });
 
-  test("falls back to unpdf when pdftotext is not installed", async () => {
+  test("the unpdf fallback reads the same text layer", async () => {
     const file = await put(inbox("k.pdf"), makePdf(["Kontoauszug Raiffeisen", "Größe"]));
-    const originalPath = process.env.PATH;
-    process.env.PATH = path.dirname(process.execPath);
-    try {
-      expect(await pdfText(file)).toBe("Kontoauszug Raiffeisen\nGröße");
-    } finally {
-      process.env.PATH = originalPath;
-    }
+    expect(await viaUnpdf(file, 2)).toBe("Kontoauszug Raiffeisen\nGröße");
   });
 
   // CI builds helpers/ocr.swift on macOS and points CLOUDTIDY_OCR_HELPER at it.

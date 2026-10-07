@@ -15,7 +15,7 @@ async function viaPdftotext(file: string, maxPages: number): Promise<string | nu
   return code === 0 ? text : null;
 }
 
-async function viaUnpdf(file: string, maxPages: number): Promise<string> {
+export async function viaUnpdf(file: string, maxPages: number): Promise<string> {
   try {
     const { extractText, getDocumentProxy } = await import("unpdf");
     const pdf = await getDocumentProxy(new Uint8Array(await Bun.file(file).arrayBuffer()));
