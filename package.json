@@ -1,0 +1,28 @@
+{
+  "name": "cloudtidy",
+  "version": "0.1.0",
+  "description": "Local-first iCloud Drive _Inbox organizer for macOS",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "cloudtidy": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "build": "bun build --compile src/cli.ts --outfile dist/cloudtidy",
+    "build:install": "bun build --compile src/cli.ts --outfile $HOME/.local/bin/cloudtidy"
+  },
+  "dependencies": {
+    "unpdf": "^1.8.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
+}

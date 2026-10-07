@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: brew install poppler
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - name: Build OCR helper
+        run: swiftc -O -o "$RUNNER_TEMP/cloudtidy-ocr" helpers/ocr.swift
+      - name: Test
+        run: bun test
+        env:
+          CLOUDTIDY_OCR_HELPER: ${{ runner.temp }}/cloudtidy-ocr
+      - name: Compile binary
+        run: bun run build && ./dist/cloudtidy install --print --config config/default.config.json > /dev/null
