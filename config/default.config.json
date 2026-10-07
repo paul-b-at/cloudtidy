@@ -1,0 +1,91 @@
+{
+  "root": "~/Library/Mobile Documents/com~apple~CloudDocs",
+  "inbox": "_Inbox",
+  "needsReview": "Needs_Review",
+  "duplicates": "duplicates",
+  "buckets": {
+    "uni": {
+      "dir": "01_Uni",
+      "description": "JKU AI coursework: lectures, exercises, exams, cheat sheets",
+      "subfolders": []
+    },
+    "admin": {
+      "dir": "02_Admin & Finanzen",
+      "description": "Invoices, receipts, contracts, insurance, tax, bank statements",
+      "subfolders": ["Rechnungen", "Verträge", "Steuer", "Bank"]
+    },
+    "dev": {
+      "dir": "03_Projekte & Dev",
+      "description": "Code dumps, specs, architecture diagrams, datasets",
+      "subfolders": []
+    },
+    "personal": {
+      "dir": "04_Persönlich",
+      "description": "Health, travel tickets, gym plans, identity documents",
+      "subfolders": ["Gesundheit", "Reisen", "Dokumente"]
+    }
+  },
+  "standardizedNames": {
+    "Rechnungen": "Rechnung",
+    "Verträge": "Vertrag"
+  },
+  "blocklist": [
+    "Shortcuts",
+    "Pages",
+    "Keynote",
+    "Numbers",
+    "Obsidian",
+    "Goodnotes",
+    "Preview",
+    "TextEdit",
+    "QuickTime Player",
+    "Automator",
+    "Scriptable"
+  ],
+  "courseNumbers": [],
+  "knownSenders": [
+    "Drei",
+    "A1",
+    "Magenta",
+    "Spusu",
+    "ÖGK",
+    "Linz AG",
+    "Energie AG",
+    "Wien Energie",
+    "Raiffeisen",
+    "Erste Bank",
+    "Sparkasse",
+    "BAWAG",
+    "N26",
+    "Uniqa",
+    "Allianz",
+    "Generali",
+    "Wiener Städtische",
+    "ÖBB",
+    "Amazon"
+  ],
+  "heuristics": {
+    "minScore": 3,
+    "minMargin": 2
+  },
+  "llm": {
+    "enabled": true,
+    "endpoint": "http://localhost:11434",
+    "model": "gemma3:12b",
+    "keepAlive": "30m",
+    "maxChars": 1000,
+    "confidenceThreshold": 0.7,
+    "coldTimeoutMs": 60000,
+    "warmTimeoutMs": 15000
+  },
+  "stability": {
+    "intervalMs": 3000,
+    "maxWaitMs": 60000
+  },
+  "lockTimeoutMs": 60000,
+  "notifications": true,
+  "ocrHelper": "~/.local/share/cloudtidy/cloudtidy-ocr",
+  "historyFile": "~/Library/Application Support/cloudtidy/history.jsonl",
+  "lockFile": "~/Library/Application Support/cloudtidy/cloudtidy.lock",
+  "logFile": "~/Library/Logs/cloudtidy/cloudtidy.log"
+}
