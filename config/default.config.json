@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "root": "~/Library/Mobile Documents/com~apple~CloudDocs",
+  "classifier": "./bin/classify",
+  "ocr": "./bin/ocr",
+  "timeoutMs": 60000,
+  "routes": [
+    {
+      "id": "uni",
+      "folder": "01_Uni",
+      "description": "University coursework, lectures and exercises",
+      "rename": false
+    },
+    {
+      "id": "invoices",
+      "folder": "02_Admin & Finanzen/Rechnungen",
+      "description": "Invoices and payment requests",
+      "rename": true
+    },
+    {
+      "id": "contracts",
+      "folder": "02_Admin & Finanzen/Vertr\u00e4ge",
+      "description": "Contracts and insurance policies",
+      "rename": true
+    },
+    {
+      "id": "dev",
+      "folder": "03_Projekte & Dev",
+      "description": "Software projects and technical specifications",
+      "rename": false
+    },
+    {
+      "id": "personal",
+      "folder": "04_Pers\u00f6nlich",
+      "description": "Personal, travel, identity and health documents",
+      "rename": false
+    }
+  ]
+}

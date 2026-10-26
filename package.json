@@ -1,0 +1,17 @@
+{
+  "name": "cloudtidy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "scan": "bun src/cli.ts scan --dry-run",
+    "doctor": "bun src/cli.ts doctor",
+    "build:helpers": "bash scripts/build-helpers.sh"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.2",
+    "typescript": "5.9.3"
+  }
+}
