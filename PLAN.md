@@ -15,7 +15,7 @@ Updated 26 October 2026. Source: [Notion project](https://app.notion.com/p/b7111
 - Bun configuration validation and a read-only `classify` / `scan --dry-run` CLI.
 - Bounded text extraction, optional PDF text layer extraction, native Vision OCR helper.
 - Conservative rules, schema-constrained Swift classifier, strict output validation, review fallback.
-- `doctor`, mocked tests, CI typecheck/tests and a macOS 26 Swift build job.
+- `doctor`, mocked tests, and a CI template for typecheck/tests plus macOS 26 Swift compilation. Workflow activation needs a manual commit because the GitHub connection cannot write workflow files.
 - No move/delete/rename command, LaunchAgent installation or drive sweep.
 
 ## Increment 2 — real-device verification (not complete)

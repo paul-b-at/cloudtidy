@@ -1,0 +1,21 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+  swift-build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/build-helpers.sh
+      # Build-only: hosted CI is not assumed to have Apple Intelligence available.

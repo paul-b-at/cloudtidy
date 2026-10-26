@@ -23,7 +23,7 @@ bun src/cli.ts classify /absolute/path/to/example.pdf
 bun run scan
 ```
 
-If `_Inbox` does not exist, create it yourself in iCloud Drive before scanning. `doctor` never creates folders. A successful build does not guarantee the model is available; `doctor` checks that separately. Apple model execution must be verified on a real supported Mac; CI only compiles the Swift helpers.
+If `_Inbox` does not exist, create it yourself in iCloud Drive before scanning. `doctor` never creates folders. A successful build does not guarantee the model is available; `doctor` checks that separately. Apple model execution must be verified on a real supported Mac; The supplied CI template builds the Swift helpers without running model inference.
 
 Commands must run from the repository root. To use a fixture folder rather than iCloud, copy `config/default.config.json` to a local file, change `root` to an absolute path containing `_Inbox`, then run:
 
@@ -62,6 +62,10 @@ bun test
 ```
 
 Tests use temporary roots and a mocked helper. They cover path/filename validation, uncertain/invalid model results, subprocess bounds/timeouts, rule conflicts, symlink exclusion, and a scan that leaves files untouched. Actual Apple inference and OCR cannot be tested in the Linux development environment.
+
+### Enable CI manually
+
+The GitHub connection can push code but cannot create workflow files. Copy `docs/ci-workflow.yml.template` to `.github/workflows/ci.yml` and commit it using your own GitHub credentials. Until then there are no active CI checks. The template runs Bun tests/typechecking on Linux and Swift build-only checks on macOS 26; it does not assume Apple Intelligence is enabled on a hosted runner.
 
 ## Before enabling automation
 
