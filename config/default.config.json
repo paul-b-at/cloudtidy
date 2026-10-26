@@ -4,36 +4,70 @@
   "classifier": "./bin/classify",
   "ocr": "./bin/ocr",
   "timeoutMs": 60000,
+  "stateDir": "~/Library/Application Support/cloudtidy",
+  "logDir": "~/Library/Logs/cloudtidy",
+  "blocklist": [],
+  "debounceMs": 3000,
+  "stabilityRetries": 2,
+  "classifierRetries": 1,
+  "lockWaitMs": 30000,
+  "naming": {
+    "datePrefix": false
+  },
+  "daemon": {
+    "apply": false,
+    "notify": true,
+    "intervalSec": 600
+  },
   "routes": [
     {
       "id": "uni",
       "folder": "01_Uni",
       "description": "University coursework, lectures and exercises",
-      "rename": false
+      "rename": false,
+      "patterns": [
+        "VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU"
+      ]
     },
     {
       "id": "invoices",
       "folder": "02_Admin & Finanzen/Rechnungen",
       "description": "Invoices and payment requests",
-      "rename": true
+      "rename": true,
+      "docType": "Rechnung",
+      "patterns": [
+        "Rechnung|Invoice|IBAN|ATU\\d{8}|Betrag|Zahlungsziel"
+      ]
     },
     {
       "id": "contracts",
-      "folder": "02_Admin & Finanzen/Vertr\u00e4ge",
+      "folder": "02_Admin & Finanzen/Verträge",
       "description": "Contracts and insurance policies",
-      "rename": true
+      "rename": true,
+      "docType": "Vertrag",
+      "patterns": [
+        "Vertrag|Polizze|Versicherung|Mietvertrag"
+      ]
     },
     {
       "id": "dev",
       "folder": "03_Projekte & Dev",
       "description": "Software projects and technical specifications",
-      "rename": false
+      "rename": false,
+      "patterns": [
+        "github\\.com|repository|architecture|schema"
+      ]
     },
     {
       "id": "personal",
-      "folder": "04_Pers\u00f6nlich",
+      "folder": "04_Persönlich",
       "description": "Personal, travel, identity and health documents",
-      "rename": false
+      "rename": false,
+      "patterns": [
+        "\\b(Reisepass|Personalausweis|F\u00fchrerschein|Geburtsurkunde|Meldezettel|Staatsb\u00fcrgerschaftsnachweis)\\b",
+        "\\b(Arztbrief|Befundbericht|Entlassungsbrief|e-card|Krankenschein)\\b",
+        "\\b(Flugticket|Boarding\\s?Pass|Bordkarte|Flugbuchung)\\b"
+      ]
     }
   ]
 }
