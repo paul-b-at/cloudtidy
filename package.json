@@ -6,8 +6,10 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "cloudtidy": "bun src/cli.ts",
     "scan": "bun src/cli.ts scan --dry-run",
     "doctor": "bun src/cli.ts doctor",
+    "eval": "bun src/cli.ts eval",
     "build:helpers": "bash scripts/build-helpers.sh"
   },
   "devDependencies": {
