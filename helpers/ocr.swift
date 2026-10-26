@@ -18,7 +18,7 @@ do {
  guard size <= 25 * 1024 * 1024 else { throw CocoaError(.fileReadTooLarge) }
  var parts: [String] = []
  if url.pathExtension.lowercased() == "pdf" {
-  guard let document = PDFDocument(url: url) else { throw CocoaError(.fileReadCorruptFile) }
+  guard let document = PDFDocument(url: url), !document.isLocked else { throw CocoaError(.fileReadCorruptFile) }
   for i in 0..<min(document.pageCount, 2) {
    if let page = document.page(at: i) {
     let thumbnail = page.thumbnail(of: NSSize(width: 1600, height: 2200), for: .mediaBox)
@@ -26,8 +26,14 @@ do {
    }
   }
  } else {
-  guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-        let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceThumbnailMaxPixelSize:2200] as CFDictionary)
+  guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { throw CocoaError(.fileReadCorruptFile) }
+  // A small file can still decode to gigabytes (PNG/TIFF); refuse absurd pixel counts before creating the thumbnail.
+  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
+  let width = properties?[kCGImagePropertyPixelWidth as String] as? Int ?? 0
+  let height = properties?[kCGImagePropertyPixelHeight as String] as? Int ?? 0
+  guard width > 0, height > 0, width <= 30_000, height <= 30_000, width * height <= 120_000_000 else { throw CocoaError(.fileReadTooLarge) }
+  // WithTransform applies EXIF orientation; without it rotated phone photos are OCR'd sideways.
+  guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways:true, kCGImageSourceCreateThumbnailWithTransform:true, kCGImageSourceThumbnailMaxPixelSize:2200] as CFDictionary)
   else { throw CocoaError(.fileReadCorruptFile) }
   parts.append(try recognize(image))
  }
