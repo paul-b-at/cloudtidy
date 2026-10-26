@@ -1,6 +1,6 @@
 # cloudtidy — Apple Foundation Models implementation plan
 
-Updated 26 October 2026. Source: [Notion project](https://app.notion.com/p/b7111c0ecd3d4542aacb7044e1de4e3d).
+Updated for the implementation of increments 3 and 4. Source: [Notion project](https://app.notion.com/p/b7111c0ecd3d4542aacb7044e1de4e3d).
 
 ## Approved direction
 
@@ -10,42 +10,42 @@ Updated 26 October 2026. Source: [Notion project](https://app.notion.com/p/b7111
 - Invoice/contract renaming is type-dependent; keep university/code filenames unchanged.
 - Test and review dry runs before any autonomous file operation.
 
-## Increment 1 — implemented in this PR, pending Mac verification
+## Increment 1 — read-only classifier (done, pending Mac verification)
 
-- Bun configuration validation and a read-only `classify` / `scan --dry-run` CLI.
-- Bounded text extraction, optional PDF text layer extraction, native Vision OCR helper.
-- Conservative rules, schema-constrained Swift classifier, strict output validation, review fallback.
-- `doctor`, mocked tests, and a CI template for typecheck/tests plus macOS 26 Swift compilation. Workflow activation needs a manual commit because the GitHub connection cannot write workflow files.
-- No move/delete/rename command, LaunchAgent installation or drive sweep.
+Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR extraction, rules + schema-constrained Swift classifier, strict validation, review fallback, `doctor`, mocked tests, CI template.
 
-## Increment 2 — real-device verification (not complete)
+## Increment 2 — real-device verification (PENDING: needs the M4 Pro)
 
-- Build Swift helpers with Xcode 26+, run doctor and confirm model availability.
-- Evaluate at least 20 representative German/English documents on the M4 Pro.
-- Record false routes, review rate, naming accuracy, cold and warm latency.
-- Test prompt injection text, OCR-only scans, refusals, context overflow and offline use.
-- Verify execution in a logged-in-user LaunchAgent context; do not assume hosted CI can run Apple Intelligence.
-- Optional comparison against Gemma if already available, not an added runtime dependency.
+- Build helpers with Xcode 26+, run `doctor`, `bin/classify --check`.
+- `eval` on ≥ 20 representative German/English documents with labels: accuracy, review rate, naming correctness, cold/warm latency (tooling implemented; numbers are not).
+- Prompt-injection text, OCR-only scans, refusals/guardrails, context overflow, offline use.
+- Model reachable from a logged-in-user LaunchAgent (`status` shows it); TCC/Full Disk Access for `bun`.
 
-## Increment 3 — safe ingestion and moves (not implemented)
+## Increment 3 — safe ingestion and moves (implemented, tested on Linux)
 
-- File stability polling and safe handling of iCloud placeholders/downloads.
-- Per-process locking, idempotent rescan and bounded retry behavior.
-- Race-resistant filesystem validation: realpath containment, symlink rejection, app-container blocklist.
-- Atomic no-clobber moves with collision suffixes; never overwrite/delete silently.
-- Audit history and hash-verified undo implemented and tested before enabling moves.
-- Explicit review of dry-run proposals; uncertain files go to review, not guessed destinations.
-- Deterministic validation of model-suggested dates/senders or retain original names.
+- Stability debounce with bounded retries; skips dotfiles, `.icloud` placeholders, partial downloads, symlinks, folders.
+- PID lock with stale detection; content-hash decision cache (idempotent rescans); bounded classifier retries.
+- Realpath containment, symlink-component rejection, blocklist (`_Archiv`, app containers, `~` names).
+- Atomic no-clobber same-volume moves (exclusive rename via `bun:ffi`), `(n)` suffixes, duplicate → review, EXDEV → review (never copy+delete); source revalidation before the move.
+- Append-only audit history and hash-verified `undo` (preview by default).
+- Deterministic naming: model date/sender are used only when found verbatim in the text (protocol v2: the model never supplies a name).
+- `run`, `review`, `history`, `undo`, `sweep` (preview + explicit confirmation; never from the daemon).
 
-## Increment 4 — daemon and polish (not implemented)
+## Increment 4 — daemon and polish (implemented, pending Mac verification)
 
-- User LaunchAgent with WatchPaths plus periodic rescan, stable executable path, permission diagnostics.
-- Native batch notifications without document contents.
-- Inbox-only first; later root sweep requires a preview and explicit confirmation.
-- Keep historical archive and native application containers permanently off limits.
+- `install`/`uninstall`/`status`: LaunchAgent with `WatchPaths` + periodic `StartInterval`, absolute stable paths, `install --print`.
+- Daemon is read-only unless `daemon.apply: true`.
+- Batch notifications (counts/folders only) via `osascript` argv.
+- Not implemented: iCloud placeholder download (`brctl`), non-Mac installs.
+
+## Deviations from the Notion plan (see README)
+
+- Protocol v2 replaces `suggestedName` with `documentDate`/`sender`.
+- Tier-1 patterns for `personal` are an addition (Notion lists four routes' patterns); anything outside them goes to the model/review. The model's guardrails may refuse sensitive documents; structured output cannot use permissive guardrails.
+- `undo` previews unless `--apply`.
 
 ## Acceptance gate
 
-No claims of production readiness until model/OCR helpers have compiled and executed on the target Mac, fixture results are reviewed, and moving/undo safety tests pass. CI is build/mock testing, not model-quality validation. See README for commands and remaining limitations.
+No claim of production readiness until the helpers have compiled and run on the target Mac, the 20-document evaluation has been reviewed, and the LaunchAgent has been observed to reach the model and read `_Inbox`. CI is build/mock testing, not model-quality validation.
 
 The older detailed plan is preserved at `docs/legacy-plan-2026-10-07.md` as historical context, not current backend guidance.

@@ -1,3 +1,5 @@
+# Copy to .github/workflows/ci.yml with credentials that are allowed to write workflows
+# (the GitHub connector used to publish this branch cannot create files under .github/workflows).
 name: CI
 on: [push, pull_request]
 permissions:
@@ -13,9 +15,16 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+      # Side-effect-free: renders the LaunchAgent plist and nothing else.
+      - run: bun src/cli.ts install --print >/dev/null
   swift-build:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+      - run: xcrun --sdk macosx swiftc --version && xcrun --sdk macosx --show-sdk-version
       - run: bash scripts/build-helpers.sh
-      # Build-only: hosted CI is not assumed to have Apple Intelligence available.
+      - run: codesign --verify --verbose=2 bin/classify bin/ocr
+      # Smoke test only: proves the binary launches and links FoundationModels. Hosted VMs are not expected to have
+      # Apple Intelligence, so a failure here is informational. Build-only is the gate.
+      - run: ./bin/classify --check </dev/null
+        continue-on-error: true
