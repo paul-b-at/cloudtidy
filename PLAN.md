@@ -1,6 +1,6 @@
 # cloudtidy — Apple Foundation Models implementation plan
 
-Updated after the safety and Notion-conformance review fixes (round 2). Source: [Notion project](https://app.notion.com/p/b7111c0ecd3d4542aacb7044e1de4e3d).
+Updated after the safety and Notion-conformance review fixes (round 4). Source: [Notion project](https://app.notion.com/p/b7111c0ecd3d4542aacb7044e1de4e3d).
 
 ## Approved direction
 
@@ -30,7 +30,7 @@ Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR ex
 - Append-only audit history with a write-ahead journal (fsync'd intent/commit/abort + crash reconciliation) and hash-verified `undo` (preview by default); undo holds in their own store.
 - The mover never creates ANY folder (bucket, sub-folder or `_Inbox/Needs_Review`): a missing destination → review with `folder_missing:<relative path>`; a missing `Needs_Review` → the file stays in `_Inbox` and the run reports an error. `init [--yes]` creates the full taxonomy; `doctor` checks all of it. Apply modes only run inside iCloud Drive unless `allowNonICloudRoot`.
 - Deterministic naming first (labelled issue date, known senders); the model only fills missing date/sender with the route locked, and its values are used only when found in the text (protocol v2: the model never supplies a name).
-- Transient model failures defer files in `_Inbox` as pending (backoff 5–60 min). Review only after `model.maxDeferHours` since the first **apply-mode** attempt, ≥ 3 apply-mode attempts and a final failed attempt in the current run (dry-runs never start the clock); a per-run circuit breaker limits the cost of a hung model. Definite failures review immediately with their specific reason (`model_refusal`, `model_guardrail`, `model_unsupported_language`, `model_context_overflow`, `model_invalid_output`, …), except on a rule hit: the rule's route and the original name are kept and the naming reason is recorded.
+- Transient model failures defer files in `_Inbox` as pending (backoff 5–60 min). Review only after `model.maxDeferHours` since the first **apply-mode** attempt, ≥ 3 apply-mode attempts and a final failed attempt in the current run (dry-runs never start the clock); a per-run circuit breaker limits the cost of a hung model. Only real helper calls for that file in that run count as attempts: files skipped by an open breaker count nothing, and an expired file bypasses the breaker for exactly one real call (no retries). Definite failures review immediately with their specific reason (`model_refusal`, `model_guardrail`, `model_unsupported_language`, `model_context_overflow`, `model_invalid_output`, …), except on a rule hit: the rule's route and the original name are kept and the naming reason is recorded.
 - State files are validated entry by entry (`pending.json`, `held.json`, cache); a failed rollback is journaled (never an unjournaled file); logs from launchd are rotated by size (5 MB × 3).
 - `run`, `review`, `history`, `undo`, `sweep` (preview + explicit confirmation; never from the daemon).
 
@@ -63,7 +63,7 @@ Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR ex
 - Files are never put into `Needs_Review` just because the model is temporarily unavailable: they wait in `_Inbox` as pending and are only reviewed after `model.maxDeferHours` (24 h) of *apply-mode* attempts, at least 3 of them, and one more failed attempt (see README step 7).
 - cloudtidy does not create any folder while moving (`folder_missing:<path>` → review); `cloudtidy init` creates the taxonomy (buckets, sub-folders, `_Inbox/Needs_Review`) explicitly, after iCloud has synced. Notion's "sub-folders `Rechnungen/`, `Verträge/` are created" is therefore done by `init`, not on demand.
 - Defaults `daemon.intervalSec: 120` and `stabilityRetries: 2` (shared window) replace the original 600 s / 0 so that "sorted within seconds" holds for files that are still being written and leftover waits stay about two minutes.
-- The `Sozialversicherung…` compound is excluded from the contracts rule; senders that are only stop-words (`Die`, `Re`, `An`, `Sehr`, …) never count.
+- The `Sozialversicherung…` compound, `Versicherungsnummer` and `Versicherungsdaten…` are excluded from the contracts rule; senders that are only stop-words (`Die`, `Re`, `An`, `Sehr`, …) never count.
 - `undo` previews unless `--apply`.
 - Route IDs (`uni`, `invoices`, `contracts`, `admin`, `dev`, `personal`) replace the Notion JSON's category/subcategory pair; each ID maps to one configured folder.
 - Notifications are single-file (`Sorted invoice into 02_Admin & Finanzen`) or batched counts (`Sorted 2 files (01_Uni 1, 02_Admin & Finanzen 1) · 1 to Needs_Review`); never filenames.
