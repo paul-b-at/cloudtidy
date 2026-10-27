@@ -18,6 +18,8 @@ export interface Decision {
  routeMs?: number;
  namingMs?: number;
  modelCalls?: number;
+ /** Rule hit whose name could not be improved because the model gave a definite failure (refusal, guardrail, ...): route kept, original name, this reason is shown/logged. */
+ namingReason?: string;
 }
 export const review = (reason: string, transient = false): Decision => ({ route: null, tier: 'none', needsReview: true, reason, transient, documentDate: null, sender: null });
 const RESPONSE_KEYS = ['version', 'route', 'documentDate', 'sender', 'needsReview'];
@@ -62,10 +64,16 @@ export const callHelper: ModelCall = async (filename, text, config, lockedRoute 
 };
 export interface ClassifyDeps { model?: ModelCall; sleep?: (ms: number) => Promise<unknown> }
 export type ModelOutcome = { kind: 'ok'; result: ModelResult } | { kind: 'transient'; reason: string; retry: boolean } | { kind: 'failed'; reason: string };
+/** The helper's own diagnostic token (stderr `classification_failed:<code>`) -> a specific, user-visible reason. Anything unknown stays `model_failed`. */
+const TOKEN_REASON: Record<string, string> = {
+ refusal: 'model_refusal', guardrail_violation: 'model_guardrail', unsupported_language: 'model_unsupported_language', context_window_exceeded: 'model_context_overflow',
+ decoding_failure: 'model_invalid_output', invalid_request: 'model_invalid_request', oversized_request: 'model_invalid_request'
+};
 /**
  * Helper failure -> outcome. Transient (retry later, file stays in _Inbox): unavailable / modelNotReady (exit 2), rate limited or
- * concurrent requests (exit 4), timeout, crash by signal. Everything else (refusal, guardrail, unsupported language, invalid output,
- * bad request) is a definite answer for this document: it goes to review.
+ * concurrent requests (exit 4), timeout, crash by signal. Everything else (refusal, guardrail, unsupported language, context overflow,
+ * invalid output, bad request) is a definite answer for this document. The specific reason is kept, never collapsed: review shows
+ * `model_refusal`, `model_guardrail`, `model_unsupported_language`, `model_context_overflow`, `model_invalid_output`, ... .
  */
 export function modelFailure(e: unknown): ModelOutcome {
  if (e instanceof SyntaxError) return { kind: 'failed', reason: 'invalid_response' };
@@ -75,7 +83,7 @@ export function modelFailure(e: unknown): ModelOutcome {
  if (e.exitCode === 2) return { kind: 'transient', reason: 'model_unavailable', retry: false };
  if (e.exitCode === 4) return { kind: 'transient', reason: 'model_busy', retry: true };
  if (e.message === 'helper_failed' && e.exitCode === null) return { kind: 'transient', reason: 'model_crashed', retry: true };
- return { kind: 'failed', reason: 'model_failed' };
+ return { kind: 'failed', reason: (e.token && TOKEN_REASON[e.token]) || 'model_failed' };
 }
 async function callModel(filename: string, text: string, config: Config, deps: ClassifyDeps, locked: string | null): Promise<ModelOutcome> {
  const call = deps.model ?? callHelper, sleep = deps.sleep ?? Bun.sleep;
@@ -116,7 +124,8 @@ export async function classify(filename: string, text: string, config: Config, d
  if (!missing) return done({});
  const m = await callModel(filename, text, config, deps, rule.id); // route locked: the model cannot change it
  if (m.kind === 'transient') return { ...done({ modelCalls: 1 }), transient: true, reason: m.reason };
- if (m.kind === 'failed') return { ...review(m.reason), routeMs, namingMs: now() - t1, modelCalls: 1 };
+ // Definite failure (refusal, guardrail, unsupported language, ...): the rule's route stays final and the file keeps its original name; the reason is recorded.
+ if (m.kind === 'failed') return done({ modelCalls: 1, namingReason: `naming_${m.reason}` });
  // The model ran. Whatever it could not state stays null and naming.ts keeps the original name.
  const usable = !m.result.needsReview && m.result.route === rule.id;
  return done({ modelCalls: 1, documentDate: det.date ?? (usable ? m.result.documentDate : null), sender: det.sender ?? (usable ? m.result.sender : null) });
