@@ -279,9 +279,9 @@ test('deferral gives up after model.maxDeferHours with a reason in Needs_Review;
   t += 23 * 3_600_000; const mid = await run(); expect(mid.counts.pending).toBe(2); expect((await inboxFiles(sb)).sort()).toEqual(['contract.txt', 'note.txt']);
   t += 2 * 3_600_000; const late = await run(); // 25 h, but only 2 attempts so far: still pending (give-up needs >= 3 apply-mode attempts)
   expect(late.counts.pending).toBe(2);
-  t += 3_600_000; const end = await run(); // >= 24 h, 3 earlier attempts, and this final attempt fails too
-  expect(end.items.map(i => `${i.file}:${i.outcome}:${i.reason}`).sort()).toEqual(['contract.txt:review:deferred_too_long:model_unavailable', 'note.txt:review:deferred_too_long:model_unavailable']);
-  expect((await readdir(sb.review)).sort()).toEqual(['contract.txt', 'note.txt']);
+  t += 3_600_000; const end = await run(); // >= 24 h, 3 earlier attempts, and this final attempt (a real call) fails too. The model is down for the whole run, so only the first file is really asked:
+  expect(end.items.map(i => `${i.file}:${i.outcome}:${i.reason}`).sort()).toEqual(['contract.txt:review:deferred_too_long:model_unavailable', 'note.txt:pending:model_unavailable']); // note.txt was answered by the open breaker: never an attempt, so never reviewed unasked
+  expect((await readdir(sb.review)).sort()).toEqual(['contract.txt']); expect(await inboxFiles(sb)).toEqual(['note.txt']);
  } finally { await sb.cleanup(); }
 });
 test('non-transient model failures (refusal, invalid answer) go to review immediately', async () => {
