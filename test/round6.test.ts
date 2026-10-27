@@ -256,7 +256,7 @@ test('G `bun run eval:fixtures` end to end with a real helper process: prints ac
 
 // ================================================================ Round 6 review fixes (safety + conformance)
 import { link } from 'node:fs/promises';
-import { extractNaming, knownSenderMatches, mixedScript, validatedSender } from '../src/naming';
+import { extractNaming, knownSenderMatches, senderCharsOk, validatedSender } from '../src/naming';
 import { plistInput, renderPlist } from '../src/install';
 import { BUSY_CAP } from '../src/pending';
 const fixtureText = (n: string) => rf(join(FIXTURE_DIR, n), 'utf8');
@@ -457,7 +457,7 @@ test('F-a realistic Drei / Magenta / Verbund / Wien Energie / A1 / UNIQA letterh
  const inv = routeOf('invoices'), con = routeOf('contracts'), s = (t: string, r = inv) => extractNaming(t, r, defaultConfig).sender;
  for (const [t, want] of [['Hutchison Drei Austria GmbH\nRechnung', 'Drei'], ['Drei GmbH\nRechnung', 'Drei'], ['Drei\nRechnung 10/2026', 'Drei'], ['DREI\nRechnung', 'Drei'], ['Drei Rechnung vom 03.10.2026', 'Drei'],
   ['Magenta Telekom\nRechnung', 'Magenta'], ['MAGENTA TELEKOM\nRechnung', 'Magenta'], ['Magenta\nRechnung', 'Magenta'], ['VERBUND AG\nRechnung', 'Verbund'], ['Verbund AG\nRechnung', 'Verbund'], ['VERBUND\nRechnung', 'Verbund'],
-  ['Wien Energie GmbH\nRechnung', 'Wien Energie'], ['WIEN ENERGIE\nRechnung', 'Wien Energie'], ['A1 Telekom Austria AG\nRechnung', 'A1'], ['Allianz Versicherungs-AG\nRechnung', 'Allianz'], ['Allianz SE\nRechnung', 'Allianz']] as const) expect(s(t), t).toBe(want);
+  ['Wien Energie GmbH\nRechnung', 'Wien Energie'], ['WIEN ENERGIE\nRechnung', 'Wien Energie'], ['A1 Telekom Austria AG\nRechnung', 'A1'], ['Allianz Versicherungs-AG\nRechnung', 'Allianz'], ['Allianz Versicherungs AG\nRechnung', 'Allianz'], ['Allianz SE\nRechnung', 'Allianz']] as const) expect(s(t), t).toBe(want);
  expect(s('UNIQA Österreich Versicherungen AG\nPolizze Nr. 1', con)).toBe('UNIQA');
 });
 test('F-b a title line with a document word is never a sender ("Rechnung Bau GmbH")', () => {
@@ -486,15 +486,40 @@ test('3c the first Absender: line wins; Sender:/From: count only when there is n
  expect(extractNaming('Rechnung\nFrom: Acme Corp', inv, defaultConfig).sender).toBe('Acme Corp'); // no Absender: line: From: is used
  expect(extractNaming('Rechnung\nAbsender: Die\nFrom: Acme Corp', inv, defaultConfig).sender).toBeNull(); // a rejected Absender: is not replaced by a From: line
 });
-test('3d look-alike senders that mix scripts inside a word are rejected (Cyrillic "Е" in "Wien Еnergie"); umlauts and ß are fine', () => {
- const inv = routeOf('invoices'), fake = 'Wien \u0415nergie';
- expect(mixedScript(fake)).toBe(true); expect(mixedScript('Wien Energie')).toBe(false); expect(mixedScript('Müller Straße Österreich')).toBe(false); expect(mixedScript('\u03A9\u03BC\u03AD\u03B3\u03B1 \u0410\u043B\u044C\u0444\u0430')).toBe(false); expect(mixedScript('\u03A9mega')).toBe(true); // whole words in one script each are fine
- expect(mixedScript('Gre\u03B5k')).toBe(true);
- expect(extractNaming(`Rechnung\nAbsender: ${fake} GmbH`, inv, defaultConfig).sender).toBeNull();
- expect(validatedSender(fake, `Rechnung ${fake}`, defaultConfig)).toBeNull();
+test('3d / 6d look-alike senders are refused by an allowlist (Latin letters only, NFKC-stable): mixed scripts, whole-word Cyrillic/Greek, Cherokee/Coptic/Lisu, math-bold, fullwidth, ligatures; umlauts, ß, é are fine', () => {
+ const inv = routeOf('invoices');
+ const bad = ['Wien \u0415nergie', 'Wien \u0395nergie', '\u0412\u0410\u041D\u041A', '\u042D\u043D\u0435\u0440\u0433\u0438\u044F AG', '\u0395\u03BD\u03B5\u03C1\u03B3\u03B5\u03B9\u03B1 AE',
+  'Wien \u13AAnergie GmbH', 'Wien \u2C88nergie', 'Wien \uA4F0nergie', '\u{1D416}\u{1D422}\u{1D41E}\u{1D427} Energie', '\uFF25\uFF56\uFF49\uFF4C \uFF23\uFF4F\uFF52\uFF50', '\uFB01nance \uFB02ow AG', '\u0555' + '2 Telekom', 'Foo\u200BBar', 'Gre\u03B5k'];
+ for (const b of bad) { expect(senderCharsOk(b), JSON.stringify(b)).toBe(false); expect(extractNaming(`Rechnung\nAbsender: ${b}`, inv, defaultConfig).sender, JSON.stringify(b)).toBeNull(); expect(validatedSender(b, `Rechnung ${b}`, defaultConfig), JSON.stringify(b)).toBeNull(); }
+ expect(senderCharsOk('Wien\u00A0Energie')).toBe(false); // (an NBSP-separated "Wien Energie" in the TEXT is still the real known sender: whitespace is collapsed before matching)
+ for (const ok of ['Wien Energie', 'Müller Straßenbau', 'Café Löwe GmbH', "O'Brien & Söhne", 'A1 Telekom', 'Société Générale', 'Łódź Bau', 'Ångström AB', 'ÖBB-Personenverkehr']) expect(senderCharsOk(ok), ok).toBe(true);
  expect(validatedSender('Müller Straßenbau', 'Rechnung Müller Straßenbau', defaultConfig)).toBe('Müller-Straßenbau');
+ expect(senderCharsOk('e\u0301cole')).toBe(true); // decomposed é is normalized to NFC first
+});
+test('6d the stated-value cut also splits on fullwidth/ideographic/Arabic commas, a slash and a tab', () => {
+ const inv = routeOf('invoices');
+ for (const sep of [',', ';', '|', '\uFF0C', '\u3001', '\u060C', '\u061B', '/', '\t', '  ']) {
+  const t = `Rechnung\nAbsender: Evil Corp${sep} Drei Austria\nDrei Austria GmbH liegt bei`;
+  expect(extractNaming(t, inv, defaultConfig).sender, JSON.stringify(sep)).toBe('Evil Corp');
+ }
+});
+test('6d the document-word rule applies to model suggestions too; "Credit Suisse AG" and "Order Systems GmbH" are accepted', () => {
+ for (const t of ['Rechnung Bau GmbH', 'Vertrag Müller GmbH', 'Mietvertrag Müller', 'Invoice Foo Ltd', 'Polizze Muster AG']) expect(validatedSender(t, `Beleg\n${t}`, defaultConfig), t).toBeNull();
+ for (const t of ['Credit Suisse AG', 'Order Systems GmbH']) {
+  expect(validatedSender(t, `Rechnung\n${t}`, defaultConfig), t).toBe(t.startsWith('Credit') ? 'Credit-Suisse' : 'Order-Systems');
+  expect(extractNaming(`${t}\nRechnung\nAbsender: ${t}`, routeOf('invoices'), defaultConfig).sender, t).toBe(t);
+ }
 });
 test('F-d eval counts pending documents as "not evaluated", not as "sent to review instead"', async () => {
  const r = await runFixtureEval(defaultConfig, { model: unavailable as never }); const line = r.summary.find(l => l.startsWith('Accuracy:'))!;
  expect(line).toMatch(/sent to review instead: 0\b/); expect(line).toMatch(/NOT evaluated \(pending\): \d+/);
+});
+
+test('F-e end to end: a model that echoes a rejected "Absender: Rechnung Bau GmbH" does not get it as the sender; the name is kept', async () => {
+ const sb = await sandbox(); try {
+  await put(sb, 'scan1.txt', 'Rechnung Nr. 7\nRechnungsdatum: 01.12.2026\nAbsender: Rechnung Bau GmbH\nBetrag 10,00 EUR');
+  const echo = (async () => ({ version: 2, route: 'invoices', documentDate: '2026-12-01', sender: 'Rechnung Bau GmbH', needsReview: false })) as never;
+  const r = await runOnce(sb.config, { apply: true, model: echo }); expect(r.items[0]).toMatchObject({ outcome: 'moved', renamed: false });
+  expect(await readdir(join(sb.root, '02_Admin & Finanzen', 'Rechnungen'))).toEqual(['scan1.txt']);
+ } finally { await sb.cleanup(); }
 });
