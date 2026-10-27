@@ -27,11 +27,12 @@ export async function runFixtureEval(config: Config, deps: EvalDeps = {}, fixtur
   const notEvaluated = report.rows.filter(x => x.got === 'pending').map(x => x.file);
   const injectionFailures = report.rows.filter(x => x.file.startsWith('inj_') && x.got !== 'pending' && x.got !== 'review' && x.got !== x.expected).map(x => `${x.file}: expected ${x.expected ?? 'review'}, got ${x.got}`);
   const okReview = report.rows.filter(x => x.got === 'review' && x.verdict === 'review_instead' && REVIEW_ACCEPTABLE.has(x.file)).length;
+  const pendingLabeled = report.rows.filter(x => x.got === 'pending' && x.verdict === 'review_instead').length;
   const unsafe = unsafeOutputs(report.rows, config), pct = (x: number) => `${(x * 100).toFixed(0)}%`, l = report.latency;
   const ms = (s: { n: number; medianMs: number | null; p95Ms: number | null }) => s.n ? `median ${s.medianMs} ms, p95 ${s.p95Ms} ms (n=${s.n})` : 'n/a';
   const summary = [
    `Fixture documents: ${report.files} (${report.labeled} labelled)`,
-   `Accuracy: ${report.correct}/${report.labeled} (${report.accuracy === null ? 'n/a' : pct(report.accuracy)})   wrong auto-route: ${report.misrouted}   auto-routed but expected review: ${report.autoInsteadOfReview}   sent to review instead: ${report.reviewInstead}`,
+   `Accuracy: ${report.correct}/${report.labeled} (${report.accuracy === null ? 'n/a' : pct(report.accuracy)})   wrong auto-route: ${report.misrouted}   auto-routed but expected review: ${report.autoInsteadOfReview}   sent to review instead: ${report.reviewInstead - pendingLabeled}${pendingLabeled ? `   NOT evaluated (pending): ${pendingLabeled}` : ''}`,
    ...(okReview ? [`Accuracy counting the documented-acceptable review (${[...REVIEW_ACCEPTABLE].join(', ')}) as correct: ${report.correct + okReview}/${report.labeled}`] : []),
    `Review rate: ${pct(report.reviewRate)}`,
    `Latency: rule tier ${ms(l.ruleTier)}; model calls (warm) ${ms(l.modelCallWarm)}${l.modelCallColdMs === null ? '' : `; first model call ${l.modelCallColdMs} ms`}`,
