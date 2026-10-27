@@ -25,9 +25,29 @@ export async function lockIsStale(file: string, opts: Pick<LockOptions, 'maxAgeM
  return l.content.pid !== process.pid && !(opts.isAlive ?? pidAlive)(l.content.pid);
 }
 /**
+ * Removes a stale lock while holding a short-lived `<lock>.takeover` guard (O_EXCL). While L0 exists nobody can create a new lock
+ * (`wx` fails), and only the guard holder may unlink L0, so "L0 unchanged" cannot be invalidated between the check and the unlink.
+ */
+async function takeOver(file: string, seenRaw: string, opts: Pick<LockOptions, 'maxAgeMs' | 'isAlive'>): Promise<boolean> {
+ const guard = `${file}.takeover`;
+ let h;
+ try { h = await open(guard, 'wx', 0o600); }
+ catch (e) {
+  if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+  const s = await stat(guard).catch(() => null);
+  if (s && Date.now() - s.mtimeMs > 10000) await unlink(guard).catch(() => {}); // a taker that crashed mid-takeover
+  return false;
+ }
+ try {
+  await h.close();
+  const cur = await readLock(file);
+  if (cur && cur.raw === seenRaw && await lockIsStale(file, opts)) await unlink(file).catch(() => {});
+  return true;
+ } finally { await unlink(guard).catch(() => {}); }
+}
+/**
  * Per-process exclusive lock file (`wx`), with stale-PID takeover. Returns null when another live cloudtidy holds it for longer than `waitMs`.
- * Residual risk: two processes that simultaneously detect the same stale lock can race on its removal; the post-acquire token
- * re-check narrows but cannot fully close that window. Moves are additionally protected by the exclusive rename.
+ * Stale takeover is serialized through a guard file (see takeOver). Moves are additionally protected by the exclusive rename.
  */
 export async function acquireLock(file: string, opts: LockOptions): Promise<Lock | null> {
  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
@@ -40,7 +60,7 @@ export async function acquireLock(file: string, opts: LockOptions): Promise<Lock
    if ((await readLock(file))?.content?.token === token) return { file, token, release: async () => { if ((await readLock(file))?.content?.token === token) await unlink(file).catch(() => {}); } };
   } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
   const seen = await readLock(file);
-  if (seen && await lockIsStale(file, opts)) { if ((await readLock(file))?.raw === seen.raw) await unlink(file).catch(() => {}); continue; }
+  if (seen && await lockIsStale(file, opts) && await takeOver(file, seen.raw, opts)) continue;
   if (Date.now() >= deadline) return null;
   await Bun.sleep(opts.pollMs ?? 200);
  }

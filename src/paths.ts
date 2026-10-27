@@ -1,4 +1,5 @@
 import { lstat, mkdir, realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, dirname, join, relative, isAbsolute, sep } from 'node:path';
 import { BUILTIN_BLOCKLIST, INBOX, REVIEW, safeName, type Config } from './config';
 
@@ -56,17 +57,35 @@ export async function assertDestDir(layout: Layout, config: Config, dir: string,
    }
   }
   if (!create) continue;
+  // Never create a top-level bucket (or _Inbox): on a fresh Mac, or before iCloud has finished syncing, a locally created "01_Uni" later
+  // collides with the real one ("01_Uni 2"). Sub-folders inside an existing bucket are fine. `cloudtidy init` creates the taxonomy explicitly.
+  if (cur === join(layout.root, parts[0]!)) throw new UnsafePathError(dir, 'bucket_missing');
   await mkdir(cur);
   const s = await lstat(cur);
   if (!s.isDirectory() || s.isSymbolicLink()) throw new UnsafePathError(dir, 'symlink_component');
  }
  return cur;
 }
+export class NonICloudRootError extends Error { constructor(readonly root: string) { super(`root ${root} is not under ~/Library/Mobile Documents/com~apple~CloudDocs; refusing to modify files. Set "allowNonICloudRoot": true in the config only if that is intended.`); } }
+/** Where iCloud Drive lives for this user (resolved through symlinks if it exists). */
+export async function icloudDriveRoot(home = homedir()): Promise<string> {
+ const p = join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs');
+ return realpath(p).catch(() => p);
+}
+export async function isICloudRoot(layout: Layout, home = homedir()): Promise<boolean> {
+ const expected = key(await icloudDriveRoot(home)), actual = key(layout.root);
+ return actual === expected || actual.startsWith(expected + sep);
+}
+/** Apply modes (run --apply, daemon apply, sweep --apply, init) only touch iCloud Drive unless the config opts out explicitly. */
+export async function assertApplyAllowed(layout: Layout, config: Config, home = homedir()): Promise<void> {
+ if (config.allowNonICloudRoot) return;
+ if (!(await isICloudRoot(layout, home))) throw new NonICloudRootError(layout.root);
+}
 export async function assertDestFile(layout: Layout, config: Config, file: string): Promise<void> {
  const name = basename(file);
  if (!safeName(name) || protectedName(name, config)) throw new UnsafePathError(file, 'unsafe_name');
  await assertDestDir(layout, config, dirname(file));
- const s = await lstat(file).catch(e => { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; throw e; });
+ const s = await lstat(file).catch(e => { const c = (e as NodeJS.ErrnoException).code; if (c === 'ENOENT') return null; if (c === 'ENAMETOOLONG') throw new UnsafePathError(file, 'name_too_long'); throw e; });
  if (s?.isSymbolicLink()) throw new UnsafePathError(file, 'symlink_destination');
 }
 /** Source must be a regular, non-symlink direct child of `_Inbox` (or the iCloud root for sweep) with an unprotected name. */

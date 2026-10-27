@@ -1,6 +1,7 @@
 {
   "version": 1,
   "root": "~/Library/Mobile Documents/com~apple~CloudDocs",
+  "allowNonICloudRoot": false,
   "classifier": "./bin/classify",
   "ocr": "./bin/ocr",
   "timeoutMs": 60000,
@@ -8,7 +9,8 @@
   "logDir": "~/Library/Logs/cloudtidy",
   "blocklist": [],
   "debounceMs": 3000,
-  "stabilityRetries": 2,
+  "stabilityRetries": 0,
+  "emptyGraceMinutes": 10,
   "classifierRetries": 1,
   "lockWaitMs": 30000,
   "naming": {
@@ -19,6 +21,79 @@
     "notify": true,
     "intervalSec": 600
   },
+  "model": {
+    "maxDeferHours": 24
+  },
+  "knownSenders": [
+    {
+      "name": "Drei",
+      "aliases": [
+        "Hutchison Drei Austria",
+        "Hutchison Drei"
+      ]
+    },
+    {
+      "name": "A1",
+      "aliases": [
+        "A1 Telekom Austria",
+        "A1 Telekom"
+      ]
+    },
+    {
+      "name": "Magenta",
+      "aliases": [
+        "Magenta Telekom",
+        "T-Mobile Austria"
+      ]
+    },
+    {
+      "name": "Wien Energie",
+      "aliases": []
+    },
+    {
+      "name": "ÖBB",
+      "aliases": [
+        "Österreichische Bundesbahnen",
+        "ÖBB-Personenverkehr"
+      ]
+    },
+    {
+      "name": "Wiener Linien",
+      "aliases": []
+    },
+    {
+      "name": "Wiener Netze",
+      "aliases": []
+    },
+    {
+      "name": "Wiener Wohnen",
+      "aliases": []
+    },
+    {
+      "name": "EVN",
+      "aliases": []
+    },
+    {
+      "name": "Verbund",
+      "aliases": []
+    },
+    {
+      "name": "Wiener Städtische",
+      "aliases": []
+    },
+    {
+      "name": "UNIQA",
+      "aliases": []
+    },
+    {
+      "name": "Generali",
+      "aliases": []
+    },
+    {
+      "name": "Allianz",
+      "aliases": []
+    }
+  ],
   "routes": [
     {
       "id": "uni",
@@ -36,7 +111,7 @@
       "rename": true,
       "docType": "Rechnung",
       "patterns": [
-        "Rechnung|Invoice|IBAN|ATU\\d{8}|Betrag|Zahlungsziel"
+        "Rechnung(?:s\\p{L}*|en)?|Invoices?|IBAN|ATU\\d{8}|Betrag|Beträge|Zahlungsziel"
       ]
     },
     {
@@ -46,7 +121,18 @@
       "rename": true,
       "docType": "Vertrag",
       "patterns": [
-        "Vertrag|Polizze|Versicherung|Mietvertrag"
+        "Vertrag(?:s\\p{L}*|e|en)?|(?:Miet|Kauf|Arbeits|Dienst|Werk)vertrag(?:s\\p{L}*)?|Polizzen?|\\p{L}*versicherung(?:s\\p{L}*)?"
+      ]
+    },
+    {
+      "id": "admin",
+      "folder": "02_Admin & Finanzen",
+      "description": "Receipts, tax, bank statements and other administrative or financial documents (not invoices or contracts)",
+      "rename": false,
+      "patterns": [
+        "Kontoauszug|Kontoauszüge|Bank\\s?statement",
+        "Finanzamt|Steuerbescheid|Einkommensteuer\\p{L}*|Arbeitnehmerveranlagung|Lohnzettel|L16",
+        "Kassenbon|Kassabon|Quittung(?:en)?|Belege?|Receipts?"
       ]
     },
     {
@@ -55,7 +141,7 @@
       "description": "Software projects and technical specifications",
       "rename": false,
       "patterns": [
-        "github\\.com|repository|architecture|schema"
+        "github\\.com|repositor(?:y|ies)|architecture|schema"
       ]
     },
     {
@@ -64,9 +150,9 @@
       "description": "Personal, travel, identity and health documents",
       "rename": false,
       "patterns": [
-        "\\b(Reisepass|Personalausweis|F\u00fchrerschein|Geburtsurkunde|Meldezettel|Staatsb\u00fcrgerschaftsnachweis)\\b",
-        "\\b(Arztbrief|Befundbericht|Entlassungsbrief|e-card|Krankenschein)\\b",
-        "\\b(Flugticket|Boarding\\s?Pass|Bordkarte|Flugbuchung)\\b"
+        "Reisepass|Personalausweis|Führerschein|Geburtsurkunde|Meldezettel|Staatsbürgerschaftsnachweis",
+        "Arztbrief|Befundbericht|Entlassungsbrief|e-card|Krankenschein",
+        "Flugticket|Boarding\\s?Pass|Bordkarte|Flugbuchung"
       ]
     }
   ]

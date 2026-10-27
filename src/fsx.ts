@@ -18,8 +18,16 @@ export async function fingerprint(file: string): Promise<Fingerprint | null> {
 }
 export const exists = (p: string) => lstat(p).then(() => true, e => { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e; });
 
-export type RenameResult = 'ok' | 'exists' | 'exdev' | 'missing' | 'error';
-export interface RenameOptions { /** Skip the OS-level exclusive rename and use the lstat+rename fallback (tests, unsupported filesystems). */ forceFallback?: boolean }
+export type RenameResult = 'ok' | 'exists' | 'exdev' | 'missing' | 'error' | 'unsupported';
+export interface RenameOptions {
+ /** Explicit opt-in to the NON-atomic lstat+rename fallback (tests, filesystems without RENAME_EXCL). Also enabled by CLOUDTIDY_ALLOW_NONATOMIC_RENAME=1. */
+ forceFallback?: boolean;
+ /** Test hook: behave as if bun:ffi / the OS call were unavailable (the fallback is still refused unless opted in). */
+ disableNative?: boolean;
+ /** Test hook: which implementation actually ran. Lets a test tell the atomic native rename from the lstat+rename fallback. */
+ onBackend?: (backend: 'native' | 'fallback') => void;
+}
+const fallbackAllowed = (o: RenameOptions) => !!o.forceFallback || process.env.CLOUDTIDY_ALLOW_NONATOMIC_RENAME === '1';
 type Native = (src: string, dest: string) => { rc: number; errno: number };
 let native: Native | null | undefined;
 const ERRNO = process.platform === 'darwin'
@@ -46,25 +54,30 @@ export const exclusiveRenameSupported = () => loadNative() !== null;
 /**
  * Same-volume rename that never replaces an existing destination.
  * Primary path is an OS-level exclusive rename (atomic: no window between the existence check and the rename).
- * Fallback (ffi unavailable or filesystem lacks support): lstat(dest) then rename. The fallback is only safe against
- * cloudtidy itself (callers hold the per-process lock); a foreign process creating the destination in that
- * microsecond window could be overwritten. EXDEV is never handled by copying.
+ * Fallback (lstat(dest) then rename) is NOT atomic: a foreign process (iCloud's daemon, another device's download) creating the
+ * destination in that window would be overwritten. It is therefore never used implicitly: without `forceFallback` /
+ * CLOUDTIDY_ALLOW_NONATOMIC_RENAME=1 an unavailable or unsupported exclusive rename returns 'unsupported' and nothing moves.
+ * EXDEV is never handled by copying.
  */
 export async function exclusiveRename(src: string, dest: string, opts: RenameOptions = {}): Promise<RenameResult> {
- const fn = opts.forceFallback ? null : loadNative();
+ const fn = opts.forceFallback || opts.disableNative ? null : loadNative();
+ if (!fn && !fallbackAllowed(opts)) return 'unsupported';
  if (fn) {
+  opts.onBackend?.('native');
   const { rc, errno } = fn(src, dest);
   if (rc === 0) return 'ok';
   if (errno === ERRNO.exists) return 'exists';
   if (errno === ERRNO.exdev) return 'exdev';
   if (errno === ERRNO.missing) return 'missing';
-  if (!ERRNO.unsupported.includes(errno)) {
+  if (ERRNO.unsupported.includes(errno)) { if (!fallbackAllowed(opts)) return 'unsupported'; }
+  else {
    // errno could not be trusted: classify from filesystem state instead of guessing.
    if (await exists(dest)) return 'exists';
    if (!(await exists(src))) return 'missing';
    return 'error';
   }
  }
+ opts.onBackend?.('fallback');
  if (await exists(dest)) return 'exists';
  try { await rename(src, dest); return 'ok'; }
  catch (e) { const c = (e as NodeJS.ErrnoException).code; return c === 'EXDEV' ? 'exdev' : c === 'ENOENT' ? 'missing' : 'error'; }

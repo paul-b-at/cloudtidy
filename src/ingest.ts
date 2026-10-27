@@ -1,10 +1,10 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { INBOX, type Config } from './config';
+import { INBOX, safeName, type Config } from './config';
 import { fingerprint, type Fingerprint } from './fsx';
 import { protectedName, type Layout, type SourceKind } from './paths';
 
-export type SkipReason = 'dotfile' | 'icloud_placeholder' | 'partial_download' | 'directory' | 'symlink' | 'not_regular_file' | 'protected_name' | 'unstable' | 'empty_file';
+export type SkipReason = 'dotfile' | 'icloud_placeholder' | 'partial_download' | 'directory' | 'symlink' | 'not_regular_file' | 'protected_name' | 'unsafe_name';
 export interface Skipped { name: string; reason: SkipReason }
 export interface Candidates { files: { name: string; path: string }[]; skipped: Skipped[] }
 const PARTIAL = /\.(?:download|crdownload|part|partial|tmp|temp)$/i;
@@ -22,18 +22,21 @@ export async function listCandidates(layout: Layout, config: Config, kind: Sourc
   if (!e.isFile()) { skip('not_regular_file'); continue; }
   if (PARTIAL.test(e.name) || e.name.startsWith('Icon\r')) { skip('partial_download'); continue; }
   if (protectedName(e.name, config) || e.name === INBOX) { skip('protected_name'); continue; }
+  if (!safeName(e.name)) { skip('unsafe_name'); continue; } // control/bidi chars, edge whitespace, >160 chars: the mover would refuse it on every run
   out.files.push({ name: e.name, path: join(dir, e.name) });
  }
  return out;
 }
 export interface Stable { name: string; path: string; snapshot: Fingerprint }
-export interface StabilityResult { stable: Stable[]; skipped: Skipped[] }
+export interface StabilityResult { stable: Stable[]; unstable: { name: string; path: string }[] }
 /**
- * A file is stable when dev/ino/size/mtime are identical across a debounce interval (iCloud and browsers write files in place).
- * Unstable files get bounded extra rounds, then are skipped until the next trigger. Empty files are never considered ready.
+ * One shared debounce per run: snapshot every candidate, wait ONCE, compare. A file is stable when dev/ino/size/mtime are identical
+ * across the interval (iCloud and browsers write files in place). Files still changing are returned as `unstable` (reported as
+ * pending, retried on the next trigger; `stabilityRetries` > 0 adds extra shared rounds for them). Empty files are "stable" here;
+ * run.ts holds them back for the empty-file grace period.
  */
 export async function waitForStable(files: { name: string; path: string }[], config: Pick<Config, 'debounceMs' | 'stabilityRetries'>, sleep: (ms: number) => Promise<unknown> = Bun.sleep): Promise<StabilityResult> {
- const result: StabilityResult = { stable: [], skipped: [] };
+ const result: StabilityResult = { stable: [], unstable: [] };
  const prev = new Map<string, Fingerprint | null>();
  let pending = files;
  for (const f of pending) prev.set(f.path, await fingerprint(f.path));
@@ -42,12 +45,12 @@ export async function waitForStable(files: { name: string; path: string }[], con
   const next: typeof pending = [];
   for (const f of pending) {
    const a = prev.get(f.path), b = await fingerprint(f.path);
-   if (a && b && a.size > 0 && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs) result.stable.push({ ...f, snapshot: b });
+   if (a && b && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs) result.stable.push({ ...f, snapshot: b });
    else { prev.set(f.path, b); if (b) next.push(f); }
   }
   pending = next;
  }
- for (const f of pending) result.skipped.push({ name: f.name, reason: (prev.get(f.path)?.size ?? 1) === 0 ? 'empty_file' : 'unstable' });
+ for (const f of pending) result.unstable.push({ name: f.name, path: f.path });
  result.stable.sort((x, y) => (x.name < y.name ? -1 : 1));
  return result;
 }
