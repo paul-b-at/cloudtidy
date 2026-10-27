@@ -181,13 +181,13 @@ export function sanitizeStem(input: string, max = 120): string {
 }
 export interface NameInput { filename: string; text: string; route: Route; documentDate: string | null; sender: string | null }
 export interface NameResult { name: string; renamed: boolean; reason: string }
-/** Folders whose files may get an optional date prefix (`naming.datePrefix`): personal and admin documents. Uni/dev/invoice/contract names are never prefixed here. */
-export const DATE_PREFIX_FOLDERS = ['04_Persönlich', '02_Admin & Finanzen'];
+/** Folders whose files may get an optional date prefix (`naming.datePrefix`): personal and admin documents (the admin root and its Bank/Steuern/Belege subfolders). Uni/dev/invoice/contract names are never prefixed here. */
+export const DATE_PREFIX_FOLDERS = ['04_Persönlich', '02_Admin & Finanzen', '02_Admin & Finanzen/Bank', '02_Admin & Finanzen/Steuern', '02_Admin & Finanzen/Belege'];
 const datePrefixed = /^\d{4}-\d{2}-\d{2}[_ -]/;
 /**
  * Locked policy: invoices/contracts become `YYYY-MM-DD_<Sender>-<Doctype>.<ext>` only when the model's date AND sender are
  * both found in the extracted text; otherwise the original name is kept. Uni, dev and other assets always keep their names.
- * Optional `naming.datePrefix` adds a validated date prefix to 04_Persönlich and 02_Admin & Finanzen (admin route) documents only. The extension is always the original one.
+ * Optional `naming.datePrefix` adds a validated date prefix to 04_Persönlich and 02_Admin & Finanzen (admin root and Bank/Steuern/Belege subfolders) documents only. The extension is always the original one.
  */
 export function targetName(input: NameInput, config: Config): NameResult {
  const keep = (reason: string): NameResult => ({ name: input.filename, renamed: false, reason });
