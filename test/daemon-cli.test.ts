@@ -7,7 +7,7 @@ import { callHelper, checkModel, classify, heuristics, safeSlice, parseModelResu
 import { evaluate, formatReport, parseLabels, stats } from '../src/evaluate';
 import { run } from '../src/process';
 import type { Item } from '../src/engine';
-import { defaultConfig as config, model, sandbox, tree } from './helpers';
+import { defaultConfig as config, model, sandbox, tree, type Sandbox } from './helpers';
 
 const cli = (args: string[], env: Record<string, string> = {}) => Bun.spawn([process.execPath, resolve('src/cli.ts'), ...args], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, ...env, CLOUDTIDY_QUIET: '1' } });
 async function runCli(args: string[], env: Record<string, string> = {}) {
@@ -47,7 +47,7 @@ const EXPECTED_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
     <key>CLOUDTIDY_CONTEXT</key>
     <string>launchd</string>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>StandardOutPath</key>
   <string>/Users/paul/Library/Logs/cloudtidy/launchd.out.log</string>
@@ -67,7 +67,7 @@ test('plist escapes XML and uses absolute paths only; never enables apply on its
 });
 test('install --print emits the plist without touching the system (works on Linux)', async () => {
  const sb = await sandbox(); try {
-  const cfg = join(sb.dir, 'c.json'); await writeFile(cfg, JSON.stringify({ ...JSON.parse(await readFile('config/default.config.json', 'utf8')), root: sb.root, stateDir: join(sb.dir, 's'), logDir: join(sb.dir, 'l') }));
+  const cfg = join(sb.dir, 'c.json'); await writeFile(cfg, JSON.stringify({ ...JSON.parse(await readFile('config/default.config.json', 'utf8')), allowNonICloudRoot: true, root: sb.root, stateDir: join(sb.dir, 's'), logDir: join(sb.dir, 'l') }));
   const before = await tree(sb.dir);
   const r = await runCli(['install', '--print', '--config', cfg], {});
   expect(r.code).toBe(0); expect(r.out).toContain(`<string>${LABEL}</string>`); expect(r.out).toContain(`<string>${join(sb.root, '_Inbox')}</string>`);
@@ -88,7 +88,7 @@ const item = (o: Partial<Item>): Item => ({ file: 'secret-name.pdf', action: 'mo
 test('notification: one batch message with counts/folders only; argv passing, no interpolation into AppleScript', async () => {
  const items = [item({}), item({ file: 'b "quoted" \\ $(rm -rf).pdf', destination: '02_Admin & Finanzen/Rechnungen/b.pdf' }), item({ outcome: 'review', destination: '_Inbox/Needs_Review/c.pdf' }), item({ outcome: 'duplicate' })];
  const text = message(summarize(items))!;
- expect(text).toBe('Sorted 2 files (01_Uni 1, Rechnungen 1) · 2 to Needs_Review'); expect(text).not.toContain('secret-name'); expect(text).not.toContain('quoted');
+ expect(text).toBe('Sorted 2 files (01_Uni 1, 02_Admin & Finanzen 1) · 2 to Needs_Review'); expect(text).not.toContain('secret-name'); expect(text).not.toContain('quoted');
  const argv = notificationArgv('He said "hi" \\ $(x)');
  expect(argv).toEqual(['osascript', '-e', 'on run argv', '-e', 'display notification (item 1 of argv) with title (item 2 of argv)', '-e', 'end run', '--', 'He said "hi" \\ $(x)', 'cloudtidy']);
  expect(argv.slice(0, 7).join('\n')).not.toContain('hi');
@@ -96,6 +96,14 @@ test('notification: one batch message with counts/folders only; argv passing, no
  expect(await notify(items, async a => { calls.push(a); }, true)).toBe(true); expect(calls).toHaveLength(1);
  expect(await notify(items, async a => { calls.push(a); }, false)).toBe(false); expect(await notify([], async a => { calls.push(a); }, true)).toBe(false); expect(calls).toHaveLength(1);
  expect(await notify(items, async () => { throw new Error('x'); }, true)).toBe(false);
+});
+test('notification wording: one file names the kind and bucket; pending files are never announced; no filenames', () => {
+ const one = message(summarize([item({ route: 'invoices', destination: '02_Admin & Finanzen/Rechnungen/secret-name.pdf' })]))!;
+ expect(one).toBe('Sorted invoice into 02_Admin & Finanzen'); expect(one).not.toContain('secret-name');
+ expect(message(summarize([item({ route: 'admin', destination: '02_Admin & Finanzen/kontoauszug.pdf' })]))).toBe('Sorted admin file into 02_Admin & Finanzen');
+ expect(message(summarize([item({ outcome: 'review', destination: '_Inbox/Needs_Review/x.pdf' })]))).toBe('1 to Needs_Review');
+ expect(message(summarize([item({ outcome: 'pending', action: 'defer', destination: '_Inbox/x.pdf' })]))).toBeNull();
+ expect(message(summarize([item({}), item({})]))).toBe('Sorted 2 files (01_Uni 2)');
 });
 test('notifications are off in tests and never fire in a run', async () => {
  const sb = await sandbox(); try {
@@ -120,7 +128,8 @@ test('personal Tier-1 rules: single match is definite, conflicts and unknown doc
  expect(heuristics('Arztbrief.pdf', 'Versicherung Polizze', config)).toBeNull(); // conflict with contracts -> model
  expect(heuristics('x.txt', 'Flugticket Rechnung IBAN', config)).toBeNull();
  expect(heuristics('x.txt', 'Befunde und Sozialversicherung', config)?.id).toBe('contracts'); // not a personal word; only the contracts word matches
- expect(heuristics('x.txt', 'Steuerbescheid 2025', config)).toBeNull(); // anything else is left to the model / review
+ expect(heuristics('x.txt', 'Steuerbescheid 2025', config)?.id).toBe('admin');
+ expect(heuristics('x.txt', 'Gesprächsnotiz ohne Signalwort', config)).toBeNull(); // anything else is left to the model / review
 });
 test('model text excerpt never splits a surrogate pair; the helper request stays valid UTF-8 JSON', async () => {
  const emoji = '😀', text = 'a'.repeat(2399) + emoji + 'tail'; // the pair straddles the 2400 limit
@@ -168,7 +177,7 @@ test('eval: read-only report with accuracy vs labels, review rate and cold/warm 
 });
 test('CLI: help, usage errors and read-only commands', async () => {
  const sb = await sandbox(); try {
-  const cfg = join(sb.dir, 'c.json'); await writeFile(cfg, JSON.stringify({ ...JSON.parse(await readFile('config/default.config.json', 'utf8')), root: sb.root, stateDir: join(sb.dir, 's'), logDir: join(sb.dir, 'l'), classifier: join(sb.dir, 'none'), debounceMs: 0 }));
+  const cfg = join(sb.dir, 'c.json'); await writeFile(cfg, JSON.stringify({ ...JSON.parse(await readFile('config/default.config.json', 'utf8')), allowNonICloudRoot: true, root: sb.root, stateDir: join(sb.dir, 's'), logDir: join(sb.dir, 'l'), classifier: join(sb.dir, 'none'), debounceMs: 0 }));
   const help = await runCli(['--help']); expect(help.code).toBe(0);
   for (const w of ['classify', 'scan --dry-run', 'run', 'review', 'undo', 'history', 'sweep', 'install', 'uninstall', 'status', 'eval', 'doctor']) expect(help.out).toContain(w);
   expect((await runCli(['scan', '--config', cfg])).code).toBe(2);
@@ -191,5 +200,53 @@ test('CLI: help, usage errors and read-only commands', async () => {
   const prev = await runCli(['undo', '--last', '--config', cfg]); expect(prev.out).toContain('would_restore'); expect(await readdir(sb.inbox)).toEqual([]);
   const undo = await runCli(['undo', '--last', '--apply', '--config', cfg]); expect(undo.out).toContain('restored'); expect(await readdir(sb.inbox)).toEqual(['sheet.txt']);
   const dr = await runCli(['doctor', '--config', cfg]); expect(dr.code).toBe(1); expect(dr.out).toContain('exclusive no-clobber rename');
+ } finally { await sb.cleanup(); }
+});
+test('conformance review fixes: stats min, unmatched labels, unreadable inbox is an error, unknown undo run, missing classify file', async () => {
+ expect(stats([3, 1, 2]).minMs).toBe(1);
+ const sb = await sandbox(); try {
+  await writeFile(join(sb.inbox, 'a.txt'), 'VO 123.456');
+  const r = await evaluate(sb.inbox, sb.config, { 'a.txt': 'uni', 'ghost.pdf': 'invoices' }, { model: model({ route: 'uni' }) });
+  expect(r.unmatchedLabels).toEqual(['ghost.pdf']); expect(formatReport(r)).toContain('WARNING: 1 label(s) match no file');
+  const cfg = join(sb.dir, 'c.json'); await writeFile(cfg, JSON.stringify({ ...JSON.parse(await readFile('config/default.config.json', 'utf8')), allowNonICloudRoot: true, root: sb.root, stateDir: join(sb.dir, 's'), logDir: join(sb.dir, 'l'), classifier: join(sb.dir, 'none'), debounceMs: 0 }));
+  expect((await runCli(['undo', 'no-such-run', '--config', cfg])).code).toBe(1);
+  expect((await runCli(['classify', join(sb.dir, 'missing.txt'), '--config', cfg])).code).toBe(1);
+  const { rm } = await import('node:fs/promises'); await rm(sb.inbox, { recursive: true });
+  const scan = await runCli(['scan', '--dry-run', '--config', cfg]); expect(scan.code).toBe(1); expect(scan.err).toContain('not readable');
+  expect((await runCli(['run', '--config', cfg])).code).toBe(1);
+ } finally { await sb.cleanup(); }
+});
+const cfgFor = async (sb: Sandbox, extra: Record<string, unknown> = {}) => {
+ const cfg = join(sb.dir, 'cli.json');
+ await writeFile(cfg, JSON.stringify({ ...JSON.parse(await readFile('config/default.config.json', 'utf8')), allowNonICloudRoot: true, root: sb.root, stateDir: join(sb.dir, 's'), logDir: join(sb.dir, 'l'), classifier: join(sb.dir, 'none'), debounceMs: 0, ...extra }));
+ return cfg;
+};
+test('CLI: init previews by default, --yes creates only what is missing, and refuses outside iCloud', async () => {
+ const sb = await sandbox(); try {
+  const { rm } = await import('node:fs/promises'); await rm(join(sb.root, '04_Persönlich'), { recursive: true });
+  const cfg = await cfgFor(sb), before = await tree(sb.root);
+  const prev = await runCli(['init', '--config', cfg]); expect(prev.code).toBe(0); expect(prev.out).toContain('would create'); expect(prev.out).toContain('04_Persönlich'); expect(await tree(sb.root)).toEqual(before);
+  const done = await runCli(['init', '--yes', '--config', cfg]); expect(done.code).toBe(0); expect(done.out).toContain('Created 3 folder');
+  expect(await readdir(join(sb.root, '04_Persönlich'))).toEqual([]); expect((await runCli(['init', '--config', cfg])).out).toContain('Nothing to create');
+  const strict = await cfgFor(sb, { allowNonICloudRoot: false }); await rm(join(sb.root, '04_Persönlich'), { recursive: true });
+  const refused = await runCli(['init', '--yes', '--config', strict]); expect(refused.code).toBe(1); expect(refused.err).toContain('not under'); expect(await readdir(sb.root)).not.toContain('04_Persönlich');
+  expect((await runCli(['init', '--config', strict])).code).toBe(0); // preview is always allowed
+ } finally { await sb.cleanup(); }
+});
+test('CLI: review and status list pending files; eval has --max-files and a clean error for a missing folder; install --bun validates', async () => {
+ const sb = await sandbox(); try {
+  const cfg = await cfgFor(sb);
+  await writeFile(join(sb.inbox, 'empty.txt'), '');
+  await runCli(['run', '--apply', '--config', cfg]);
+  const review = await runCli(['review', '--config', cfg]); expect(review.out).toContain('Pending in _Inbox'); expect(review.out).toContain('empty.txt  empty — empty_file');
+  const status = await runCli(['status', '--config', cfg]); expect(status.out).toContain('Pending in _Inbox: 1'); expect(status.out).toContain('pending=1');
+  const missing = await runCli(['eval', join(sb.dir, 'nope'), '--config', cfg]); expect(missing.code).toBe(1); expect(missing.err).toContain('not a readable folder'); expect(missing.err).not.toContain('at ');
+  const docs = join(sb.dir, 'docs'); await mkdir(docs);
+  for (const n of ['a.txt', 'b.txt', 'c.txt']) await writeFile(join(docs, n), 'VO 123.456');
+  const ev = await runCli(['eval', docs, '--max-files', '2', '--config', cfg]); expect(ev.code).toBe(0); expect(ev.out).toContain('only the first 2 were evaluated'); expect(ev.out).toContain('rule-tier routing');
+  expect((await runCli(['eval', docs, '--max-files', '0', '--config', cfg])).code).toBe(2);
+  const bad = await runCli(['install', '--print', '--bun', '/opt/homebrew/Cellar/bun/1.3.2/bin/bun', '--config', cfg]); expect(bad.code).toBe(1); expect(bad.err).toContain('version-specific');
+  expect((await runCli(['install', '--print', '--bun', process.execPath, '--config', cfg])).out).toContain(`<string>${process.execPath}</string>`);
+  expect((await runCli(['--help'])).out).toMatch(/init \[--yes\][\s\S]*--bun <path>[\s\S]*--max-files N/);
  } finally { await sb.cleanup(); }
 });
