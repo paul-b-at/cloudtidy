@@ -135,15 +135,38 @@
       ]
     },
     {
-      "id": "admin",
-      "folder": "02_Admin & Finanzen",
-      "description": "Receipts, tax, bank statements and other administrative or financial documents (not invoices or contracts)",
+      "id": "bank",
+      "folder": "02_Admin & Finanzen/Bank",
+      "description": "Bank statements and account documents (Kontoauszug, Bank statement); not invoices, receipts or tax letters",
       "rename": false,
       "patterns": [
-        "Kontoauszug|Kontoauszüge|Bank\\s?statement",
-        "Finanzamt|Steuerbescheid|Einkommensteuer\\p{L}*|Arbeitnehmerveranlagung|Lohnzettel|L16",
+        "Kontoauszug|Kontoauszüge|Bank\\s?statement"
+      ]
+    },
+    {
+      "id": "tax",
+      "folder": "02_Admin & Finanzen/Steuern",
+      "description": "Tax documents: Finanzamt letters, Steuerbescheid, Einkommensteuer, Arbeitnehmerveranlagung, Lohnzettel (L16)",
+      "rename": false,
+      "patterns": [
+        "Finanzamt|Steuerbescheid|Einkommensteuer\\p{L}*|Arbeitnehmerveranlagung|Lohnzettel|L16"
+      ]
+    },
+    {
+      "id": "receipts",
+      "folder": "02_Admin & Finanzen/Belege",
+      "description": "Shop receipts and payment confirmations (Kassabon, Quittung, Beleg, Receipt); not invoices that ask for payment",
+      "rename": false,
+      "patterns": [
         "Kassenbon|Kassabon|Quittung(?:en)?|Belege?|Receipts?"
       ]
+    },
+    {
+      "id": "admin",
+      "folder": "02_Admin & Finanzen",
+      "description": "Other administrative mail: authorities, social insurance (SVS, ÖGK), insurance letters, official notices; not bank, tax, receipts, invoices or contracts",
+      "rename": false,
+      "patterns": []
     },
     {
       "id": "dev",
