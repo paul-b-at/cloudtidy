@@ -256,7 +256,7 @@ test('G `bun run eval:fixtures` end to end with a real helper process: prints ac
 
 // ================================================================ Round 6 review fixes (safety + conformance)
 import { link } from 'node:fs/promises';
-import { extractNaming, knownSenderMatches, validatedSender } from '../src/naming';
+import { extractNaming, knownSenderMatches, mixedScript, validatedSender } from '../src/naming';
 import { plistInput, renderPlist } from '../src/install';
 import { BUSY_CAP } from '../src/pending';
 const fixtureText = (n: string) => rf(join(FIXTURE_DIR, n), 'utf8');
@@ -443,4 +443,58 @@ test('H1 the real Drei / Magenta / Verbund / Wien Energie invoices still name co
  expect(s('Wien Energie GmbH\nRechnung')).toBe('Wien Energie'); expect(s('WIEN ENERGIE\nRechnung')).toBe('Wien Energie');
  expect(s('Rechnung\nvon wien energie')).toBeNull(); // wrong case: not the configured spelling
  expect([...knownSenderMatches('Allianz Versicherung AG', defaultConfig)]).toEqual(['Allianz']);
+});
+
+// ---------------------------------------------------------------- round 6c: known-sender rules
+test('F-a commonWord senders have no window: "Kaution: Drei Monatsmieten" and "Im Verbund mit der Gemeinde Linz" give no sender, even in a short document', () => {
+ const inv = routeOf('invoices'), con = routeOf('contracts');
+ expect(extractNaming('Mietvertrag\nVertragsdatum: 20.10.2026\nKaution: Drei Monatsmieten.', con, defaultConfig).sender).toBeNull();
+ expect(extractNaming('Rechnung Nr 5\nRechnungsdatum: 03.11.2026\nIm Verbund mit der Gemeinde Linz.', inv, defaultConfig).sender).toBeNull();
+ expect(extractNaming('Mietvertrag\nDrei Monate Kündigungsfrist\nVerbund der Eigentümer', con, defaultConfig).sender).toBeNull();
+ expect(knownSenderMatches('Rechnung\nDrei Tage nach Erhalt fällig', defaultConfig).size).toBe(0);
+});
+test('F-a realistic Drei / Magenta / Verbund / Wien Energie / A1 / UNIQA letterheads still name correctly', () => {
+ const inv = routeOf('invoices'), con = routeOf('contracts'), s = (t: string, r = inv) => extractNaming(t, r, defaultConfig).sender;
+ for (const [t, want] of [['Hutchison Drei Austria GmbH\nRechnung', 'Drei'], ['Drei GmbH\nRechnung', 'Drei'], ['Drei\nRechnung 10/2026', 'Drei'], ['DREI\nRechnung', 'Drei'], ['Drei Rechnung vom 03.10.2026', 'Drei'],
+  ['Magenta Telekom\nRechnung', 'Magenta'], ['MAGENTA TELEKOM\nRechnung', 'Magenta'], ['Magenta\nRechnung', 'Magenta'], ['VERBUND AG\nRechnung', 'Verbund'], ['Verbund AG\nRechnung', 'Verbund'], ['VERBUND\nRechnung', 'Verbund'],
+  ['Wien Energie GmbH\nRechnung', 'Wien Energie'], ['WIEN ENERGIE\nRechnung', 'Wien Energie'], ['A1 Telekom Austria AG\nRechnung', 'A1'], ['Allianz Versicherungs-AG\nRechnung', 'Allianz'], ['Allianz SE\nRechnung', 'Allianz']] as const) expect(s(t), t).toBe(want);
+ expect(s('UNIQA Österreich Versicherungen AG\nPolizze Nr. 1', con)).toBe('UNIQA');
+});
+test('F-b a title line with a document word is never a sender ("Rechnung Bau GmbH")', () => {
+ const inv = routeOf('invoices');
+ for (const t of ['Rechnung Bau GmbH\nIm Verbund mit der Gemeinde', 'Mietvertrag Huber GmbH\nKaution: Drei Monatsmieten', 'Invoice Foo Ltd\nWien Energie GmbH', 'Polizze Muster AG\nWien Energie GmbH', 'Gutschrift Bau GmbH\nWien Energie GmbH']) {
+  const sender = extractNaming(t, inv, defaultConfig).sender; expect(sender === null || sender === 'Wien Energie', t).toBe(true); expect(sender ?? '', t).not.toMatch(/Rechnung|Mietvertrag|Invoice|Polizze|Gutschrift/);
+ }
+ expect(extractNaming('Rechnung Bau GmbH\nIm Verbund mit der Gemeinde', inv, defaultConfig).sender).toBeNull();
+ expect(extractNaming('Absender: Rechnung Bau GmbH\nZahlung folgt', inv, defaultConfig).sender).toBeNull();
+});
+test('3a a rejected stated sender (a far-down "Absender: Drei") falls through to a valid letterhead sender', () => {
+ const inv = routeOf('invoices');
+ const t = 'A1 Telekom Austria AG\nRechnung Nr. 1\n' + 'Leistung. '.repeat(40) + '\nAbsender: Drei';
+ expect(extractNaming(t, inv, defaultConfig).sender).toBe('A1');
+});
+test('3b a stated value wins as a whole: "Absender: Evil Corp, Drei Austria" is Evil Corp, while "Absender: Drei Austria, Wien" is Drei', () => {
+ const inv = routeOf('invoices');
+ const evil = 'Rechnung\nAbsender: Evil Corp, Drei Austria\nDrei Austria GmbH liegt bei'; const sender = extractNaming(evil, inv, defaultConfig).sender;
+ expect(sender).toBe('Evil Corp'); expect(validatedSender(sender, evil, defaultConfig)).toBe('Evil');
+ expect(extractNaming('Rechnung\nAbsender: Drei Austria, Wien', inv, defaultConfig).sender).toBe('Drei');
+});
+test('3c the first Absender: line wins; Sender:/From: count only when there is no Absender: line (a quoted From: cannot win)', () => {
+ const inv = routeOf('invoices');
+ expect(extractNaming('Rechnung\nFrom: Quoted Ltd\nAbsender: Real GmbH', inv, defaultConfig).sender).toBe('Real GmbH');
+ expect(extractNaming('Rechnung\nAbsender: First GmbH\nAbsender: Second GmbH', inv, defaultConfig).sender).toBe('First GmbH');
+ expect(extractNaming('Rechnung\nFrom: Acme Corp', inv, defaultConfig).sender).toBe('Acme Corp'); // no Absender: line: From: is used
+ expect(extractNaming('Rechnung\nAbsender: Die\nFrom: Acme Corp', inv, defaultConfig).sender).toBeNull(); // a rejected Absender: is not replaced by a From: line
+});
+test('3d look-alike senders that mix scripts inside a word are rejected (Cyrillic "Е" in "Wien Еnergie"); umlauts and ß are fine', () => {
+ const inv = routeOf('invoices'), fake = 'Wien \u0415nergie';
+ expect(mixedScript(fake)).toBe(true); expect(mixedScript('Wien Energie')).toBe(false); expect(mixedScript('Müller Straße Österreich')).toBe(false); expect(mixedScript('\u03A9\u03BC\u03AD\u03B3\u03B1 \u0410\u043B\u044C\u0444\u0430')).toBe(false); expect(mixedScript('\u03A9mega')).toBe(true); // whole words in one script each are fine
+ expect(mixedScript('Gre\u03B5k')).toBe(true);
+ expect(extractNaming(`Rechnung\nAbsender: ${fake} GmbH`, inv, defaultConfig).sender).toBeNull();
+ expect(validatedSender(fake, `Rechnung ${fake}`, defaultConfig)).toBeNull();
+ expect(validatedSender('Müller Straßenbau', 'Rechnung Müller Straßenbau', defaultConfig)).toBe('Müller-Straßenbau');
+});
+test('F-d eval counts pending documents as "not evaluated", not as "sent to review instead"', async () => {
+ const r = await runFixtureEval(defaultConfig, { model: unavailable as never }); const line = r.summary.find(l => l.startsWith('Accuracy:'))!;
+ expect(line).toMatch(/sent to review instead: 0\b/); expect(line).toMatch(/NOT evaluated \(pending\): \d+/);
 });
