@@ -49,16 +49,16 @@ Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR ex
 | Notion phase | Status here |
 | --- | --- |
 | 0 Scaffolding, dry-run CLI, collisions | implemented (Linux-tested) |
-| 1 Extraction, Vision OCR, Tier-1 rules | implemented: whole-word Unicode rules, instant final rule hits, `admin` route; "20 real sample files" pending (Mac) |
+| 1 Extraction, Vision OCR, Tier-1 rules | implemented: whole-word Unicode rules, instant final rule hits, `bank`/`tax`/`receipts` routes (`admin` root is model-only); "20 real sample files" pending (Mac) |
 | 2 Foundation Models classifier | implemented against a doc-based stub (Swift 5 and 6 compile, exit-code matrix); real compile/inference, 20-doc dry-run review, LaunchAgent model access and Gemma comparison (optional) pending (Mac) |
 | 3 launchd, 3 s debounce, notifications | implemented (one shared 3 s debounce, `Sorted invoice into 02_Admin & Finanzen`-style notifications); installed behaviour and the iPhone → Mac flow pending (Mac) |
-| 4 sweep, date-prefix option, audit log | implemented (date prefix for `04_Persönlich` and `02_Admin & Finanzen`, off by default; JSONL write-ahead audit log) |
+| 4 sweep, date-prefix option, audit log | implemented (date prefix for `04_Persönlich`, `02_Admin & Finanzen` and its Bank/Steuern/Belege sub-folders, off by default; JSONL write-ahead audit log) |
 
 ## Deviations from the Notion plan (see README)
 
 - Protocol v2 replaces `suggestedName` with `documentDate`/`sender` and adds an optional `lockedRoute`; transient failures use their own exit code (4 for rate limited/concurrent requests).
 - Tier-1 patterns for `personal` are an addition (Notion lists four routes' patterns); anything outside them goes to the model/review. The model's guardrails may refuse sensitive documents; structured output cannot use permissive guardrails.
-- The `admin` route (`02_Admin & Finanzen`, no sub-folders, names kept) covers bank statements, tax and receipts, which the Notion taxonomy lists under that bucket. Patterns are conservative whole words; anything ambiguous goes to the model.
+- Admin documents are split into sub-folders (Round 7, decided by Paul): `bank` → `02_Admin & Finanzen/Bank`, `tax` → `…/Steuern`, `receipts` → `…/Belege` (names kept, conservative whole-word patterns), and `admin` stays the `02_Admin & Finanzen` root with **no patterns** (model-only: authorities, SVS/ÖGK, official notices). Overlapping matches (two routes) go to the model. `init --yes` creates the three new folders for an existing setup; configs are replaced, not merged (see README upgrade note).
 - Patterns match whole words (Unicode aware) instead of free substrings, so `Betrag` no longer fires on `Bankbetrag`; German compounds that should match are listed explicitly.
 - A rule hit is final and instant (no model check of the route). Notion's "model must confirm" step is replaced by "exactly one route matches"; the cost is that hidden document text can steer a rule route (accepted risk, documented).
 - Invoice/contract naming does not need the model when the labelled date and a known or stated sender (`Absender:`) are in the text; the model is only asked for what is missing (route locked). A rule hit is therefore instant for routing; naming latency is reported separately by `eval`.
@@ -67,7 +67,7 @@ Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR ex
 - Defaults `daemon.intervalSec: 120` and `stabilityRetries: 2` (shared window) replace the original 600 s / 0 so that "sorted within seconds" holds for files that are still being written and leftover waits stay about two minutes.
 - The `Sozialversicherung…` compound, `Versicherungsnummer` and `Versicherungsdaten…` are excluded from the contracts rule; senders that are only stop-words (`Die`, `Re`, `An`, `Sehr`, …) never count.
 - `undo` previews unless `--apply`.
-- Route IDs (`uni`, `invoices`, `contracts`, `admin`, `dev`, `personal`) replace the Notion JSON's category/subcategory pair; each ID maps to one configured folder.
+- Route IDs (`uni`, `invoices`, `contracts`, `bank`, `tax`, `receipts`, `admin`, `dev`, `personal`) replace the Notion JSON's category/subcategory pair; each ID maps to one configured folder.
 - Notifications are single-file (`Sorted invoice into 02_Admin & Finanzen`) or batched counts (`Sorted 2 files (01_Uni 1, 02_Admin & Finanzen 1) · 1 to Needs_Review`); never filenames.
 - Moves, sweep, undo and the LaunchAgent are implemented although the Notion page still describes the first increment as read-only; the review gate before `run --apply` / `daemon.apply` is a documented process, not enforced in code.
 
