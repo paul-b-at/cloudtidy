@@ -1,3 +1,4 @@
+import { rotateLogs } from './log';
 import { access, chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
@@ -115,6 +116,7 @@ export async function installAgent(config: Config, configPath: string, exec: Exe
  const body = renderPlist(plistInput(config, configPath, layout.inbox, bun, pdftotext)); // throws before anything is written if a value is invalid
  await ensureLogDir(config); await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
  for (const f of ['launchd.out.log', 'launchd.err.log']) { const p = join(config.logDir, f); await writeFile(p, '', { flag: 'a', mode: 0o600 }); await chmod(p, 0o600).catch(() => {}); }
+ await rotateLogs(config.logDir);
  const file = plistPath(home);
  await mkdir(join(home, 'Library', 'LaunchAgents'), { recursive: true });
  await writeFile(file, body);

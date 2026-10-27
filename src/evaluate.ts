@@ -6,8 +6,8 @@ import { analyze, type Analysis } from './engine';
 import { extract as realExtract } from './extract';
 import { INBOX, REVIEW } from './config';
 
-export interface InspectResult { file: string; route: string | null; destination: string | null; tier: Tier; needsReview: boolean; reason: string; renamed: boolean }
-const view = (a: Analysis, name: string): InspectResult => ({ file: name, route: a.route?.id ?? null, destination: a.transient ? `${INBOX}/${name} (pending: ${a.reason}, retried later)` : a.needsReview ? `${INBOX}/${REVIEW}/${name} (review)` : `${a.route!.folder}/${a.name}`, tier: a.tier, needsReview: a.needsReview, reason: a.reason, renamed: a.renamed });
+export interface InspectResult { file: string; route: string | null; destination: string | null; tier: Tier; needsReview: boolean; reason: string; renamed: boolean; /** Why a file that should be renamed kept its name (naming_*). */ namingReason?: string }
+const view = (a: Analysis, name: string): InspectResult => ({ file: name, route: a.route?.id ?? null, destination: a.transient ? `${INBOX}/${name} (pending: ${a.reason}, retried later)` : a.needsReview ? `${INBOX}/${REVIEW}/${name} (review)` : `${a.route!.folder}/${a.name}`, tier: a.tier, needsReview: a.needsReview, reason: a.reason, renamed: a.renamed, ...(a.note ? { namingReason: a.note } : {}) });
 /** `classify <file>`: read-only, any path, no cache/history. */
 export async function inspectFile(file: string, config: Config): Promise<InspectResult> {
  const abs = resolve(file), name = abs.split('/').pop()!;

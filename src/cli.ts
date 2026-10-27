@@ -25,7 +25,7 @@ Usage: bun src/cli.ts <command> [options]
 Commands
   classify <file>                 Classify one file (read-only, any path). Prints route, destination, tier, reason.
   scan --dry-run                  Preview what would happen to ${INBOX} as JSON (same debounce as run; no lock, cache or state writes).
-  run [--apply] [--no-cache] [--json]
+  run [--apply] [--no-cache] [--json] [--verbose]
                                   One ${INBOX} pass: debounce, classify, (with --apply) move + audit-log. Files that are unstable, empty or
                                   waiting for the model stay in ${INBOX} as pending (reported with a reason). The LaunchAgent runs this with --daemon.
   review                          List ${INBOX}/${REVIEW} with the recorded reason for each file, then files still pending in ${INBOX}.
@@ -35,7 +35,8 @@ Commands
                                   still matches and the original path is free; never overwrites.
   init [--yes]                    Preview (default) or create the missing taxonomy folders (_Inbox, the buckets, configured sub-folders).
                                   Run it only after iCloud Drive has fully synced. Moves never create top-level buckets themselves.
-  sweep [--apply] [--yes]         Loose top-level files in the iCloud Drive root. Preview first; --apply asks for confirmation (or --yes).
+  sweep [--apply] [--yes] [--verbose]
+                                  Loose top-level files in the iCloud Drive root. Preview first; --apply asks for confirmation (or --yes).
                                   Never runs from the LaunchAgent. Folders, app containers and _Archiv are never touched.
   install [--print] [--bun <path>]
                                   Write ~/Library/LaunchAgents/at.paul.cloudtidy.plist and load it (macOS). --print only prints the plist.
@@ -68,12 +69,20 @@ const INBOX_UNREADABLE = `${INBOX} is not readable (check the path, iCloud sync 
 function printItems(items: Item[]) {
  for (const i of items) out(show(`${i.outcome.padEnd(9)} ${i.file}  →  ${i.destination}   [${i.tier}${i.cached ? ', cached' : ''}: ${i.reason}${i.renamed ? ', renamed' : ''}${i.detail ? `, ${i.detail}` : ''}]`));
 }
-function printReport(r: RunReport, apply: boolean) {
+/** Skipped entries: folders are only counted (a preview of the iCloud root lists dozens of them); everything else is named. `--verbose` lists all. */
+function printSkipped(skipped: RunReport['skipped'], verbose: boolean) {
+ const dirs = skipped.filter(s => s.reason === 'directory');
+ for (const s of verbose ? skipped : skipped.filter(x => x.reason !== 'directory')) out(show(`skipped   ${s.name}  (${s.reason})`));
+ if (!verbose && dirs.length) out(`skipped   ${dirs.length} folder${dirs.length === 1 ? '' : 's'} (never touched; --verbose lists them)`);
+}
+function printReport(r: RunReport, apply: boolean, verbose = false) {
  if (r.locked) return out('Another cloudtidy run holds the lock; nothing done.');
  if (!r.inboxReadable) return out(INBOX_UNREADABLE);
- out(`${apply ? 'APPLY' : 'DRY-RUN'} ${r.runId}${r.model ? `   model: ${r.model.available ? 'available' : `UNAVAILABLE (${r.model.reason})`}` : ''}`);
+ const head = `${apply ? 'APPLY' : 'DRY-RUN'} ${r.runId}${r.model ? `   model: ${r.model.available ? 'available' : `UNAVAILABLE (${r.model.reason})`}` : ''}`;
+ if (!verbose && !r.items.length && !r.recovered.recovered && !r.recovered.aborted && !r.skipped.some(s => s.reason !== 'directory')) return out(`${head}: nothing to sort`); // keeps the daemon log small
+ out(head);
  printItems(r.items);
- for (const s of r.skipped) out(show(`skipped   ${s.name}  (${s.reason})`));
+ printSkipped(r.skipped, verbose);
  if (r.recovered.recovered || r.recovered.aborted) out(`journal: ${r.recovered.recovered} interrupted move(s) recovered, ${r.recovered.aborted} aborted (see "history")`);
  out(`counts: ${Object.entries(r.counts).map(([k, v]) => `${k}=${v}`).join(' ')}${apply ? '' : '\nNo files were changed. Use --apply to move files.'}`);
 }
@@ -120,9 +129,9 @@ async function main() {
    return out(JSON.stringify({ dryRun: true, proposals: r.items, skipped: r.skipped }, null, 2));
   }
   case 'run': {
-   const { flags } = parse(argv, { flags: ['--apply', '--daemon', '--no-cache', '--json'] });
+   const { flags } = parse(argv, { flags: ['--apply', '--daemon', '--no-cache', '--json', '--verbose'] });
    const r = await runOnce(c, { apply: flags.has('--apply'), daemon: flags.has('--daemon'), useCache: !flags.has('--no-cache') });
-   if (flags.has('--json')) out(JSON.stringify(r, null, 2)); else printReport(r, r.mode === 'apply');
+   if (flags.has('--json')) out(JSON.stringify(r, null, 2)); else printReport(r, r.mode === 'apply', flags.has('--verbose'));
    if (r.counts.errors || (!r.inboxReadable && r.context !== 'launchd')) process.exitCode = 1;
    return;
   }
@@ -165,20 +174,24 @@ async function main() {
    return;
   }
   case 'sweep': {
-   const { flags } = parse(argv, { flags: ['--apply', '--yes', '--daemon'] });
+   const { flags } = parse(argv, { flags: ['--apply', '--yes', '--daemon', '--verbose'] });
    if (isDaemonContext({ daemon: flags.has('--daemon') })) throw Error('sweep never runs from the LaunchAgent');
    if (flags.has('--yes') && !flags.has('--apply')) throw new UsageError('--yes only applies together with --apply');
    const apply = flags.has('--apply');
    const r = await runOnce(c, { apply, kind: 'root', mode: 'sweep', notify: false, ...(apply ? { confirm: items => sweepConfirm(items, { yes: flags.has('--yes') }) } : {}) });
    if (!r.inboxReadable) throw Error(`${INBOX_UNREADABLE} (sweep sends uncertain files to ${INBOX}/${REVIEW}.)`);
    if (r.aborted) return r.items.length ? out('Aborted: no files were moved.') : undefined;
-   if (apply) printReport(r, true); else { printItems(r.items); for (const s of r.skipped) out(show(`skipped   ${s.name}  (${s.reason})`)); out('Preview only. Re-run with --apply (and confirm) to move files.'); }
+   if (apply) printReport(r, true, flags.has('--verbose')); else { printItems(r.items); printSkipped(r.skipped, flags.has('--verbose')); out('Preview only. Re-run with --apply (and confirm) to move files.'); }
    if (r.counts.errors) process.exitCode = 1;
    return;
   }
   case 'install': {
    const { flags, values } = parse(argv, { flags: ['--print'], values: ['--bun'] });
-   if (flags.has('--print')) { const inbox = join(c.root, INBOX); return out(renderPlist(plistInput(c, configPath, inbox, await resolveBunPath(values['--bun']), resolvePdftotext()))); }
+   if (flags.has('--print')) {
+    const layout = await resolveLayout(c).catch(() => null), inbox = layout ? layout.inbox : join(c.root, INBOX); // the resolved absolute path, exactly what `install` would bake in
+    console.error(`# watching ${inbox}${layout ? '' : ' (root not found here: unresolved path)'}`);
+    return out(renderPlist(plistInput(c, configPath, inbox, await resolveBunPath(values['--bun']), resolvePdftotext())));
+   }
    for (const n of await installAgent(c, configPath, undefined, undefined, { bun: values['--bun'] })) out(n);
    return out('Verify with: bun src/cli.ts status');
   }
