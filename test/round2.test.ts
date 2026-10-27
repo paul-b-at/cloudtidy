@@ -19,7 +19,7 @@ import { PendingStore, backoffMs } from '../src/pending';
 import { renderPlist, plistInput, resolveBunPath, isVersionedBunPath, installedPlist, installAgent, PlistError } from '../src/install';
 import { evaluate, formatReport, ruleTierSlow, stats } from '../src/evaluate';
 import { analyze } from '../src/engine';
-import { baseJson, defaultConfig as config, failingModel, model, sandbox, tree, type Sandbox } from './helpers';
+import { baseJson, defaultConfig as config, failingModel, model, sandbox, tree, type Sandbox, inboxFiles } from './helpers';
 
 const exists = (p: string) => lstat(p).then(() => true, () => false);
 const UNI = 'VO 123.456 Machine Learning exercise sheet';
@@ -99,18 +99,33 @@ test('history: torn lines are tolerated, only valid records count; files are 060
 });
 
 // ---------------------------------------------------------------- F-06 bucket_missing, init, doctor
-test('bucket_missing: a missing bucket is never created; the file is reviewed; sub-folders inside an existing bucket still are', async () => {
+test('N-08: the mover never creates ANY folder: a missing bucket or sub-folder sends the file to review with folder_missing:<path>', async () => {
  const sb = await sandbox(); try {
-  await rm(join(sb.root, '02_Admin & Finanzen'), { recursive: true });
-  await put(sb, 'bill.txt', 'Rechnung\nRechnungsdatum 03.10.2026\nDrei'); await put(sb, 'sheet.txt', UNI);
-  const r = await runOnce(sb.config, { apply: true, model: model() });
-  expect(r.items.find(i => i.file === 'bill.txt')).toMatchObject({ outcome: 'review', reason: 'bucket_missing' });
-  expect(await exists(join(sb.root, '02_Admin & Finanzen'))).toBe(false);
-  expect(await readdir(join(sb.root, '01_Uni'))).toEqual(['sheet.txt']); expect(await readdir(sb.review)).toEqual(['bill.txt']);
-  await mkdir(join(sb.root, '02_Admin & Finanzen')); // iCloud finished syncing: the Rechnungen sub-folder is created on demand
+  await rm(join(sb.root, '02_Admin & Finanzen', 'Rechnungen'), { recursive: true }); await rm(join(sb.root, '04_Persönlich'), { recursive: true });
+  await put(sb, 'bill.txt', 'Rechnung\nRechnungsdatum 03.10.2026\nDrei'); await put(sb, 'sheet.txt', UNI); await put(sb, 'trip.txt', 'Urlaub Familie Foto');
+  const before = (await tree(sb.root)).filter(l => !l.startsWith('_Inbox/'));
+  const r = await runOnce(sb.config, { apply: true, model: model({ route: 'personal' }) });
+  expect(r.items.find(i => i.file === 'bill.txt')).toMatchObject({ outcome: 'review', reason: 'folder_missing:02_Admin & Finanzen/Rechnungen' });
+  expect(r.items.find(i => i.file === 'trip.txt')).toMatchObject({ outcome: 'review', reason: 'folder_missing:04_Persönlich' });
+  expect(await exists(join(sb.root, '02_Admin & Finanzen', 'Rechnungen'))).toBe(false); expect(await exists(join(sb.root, '04_Persönlich'))).toBe(false);
+  expect(await readdir(join(sb.root, '01_Uni'))).toEqual(['sheet.txt']); expect((await readdir(sb.review)).sort()).toEqual(['bill.txt', 'trip.txt']);
+  expect((await tree(sb.root)).filter(l => !l.startsWith('_Inbox/') && !l.startsWith('01_Uni/'))).toEqual(before.filter(l => !l.startsWith('01_Uni/')));
+  await applyInit(await resolveLayout(sb.config), sb.config); // iCloud has synced: init is the only creator
   await rm(join(sb.review, 'bill.txt')); await put(sb, 'bill2.txt', 'Rechnung\nRechnungsdatum 03.10.2026\nDrei');
   expect((await runOnce(sb.config, { apply: true, model: model() })).counts.moved).toBe(1);
   expect(await readdir(join(sb.root, '02_Admin & Finanzen', 'Rechnungen'))).toHaveLength(1);
+ } finally { await sb.cleanup(); }
+});
+test('N-08b: if Needs_Review itself is missing the file stays in _Inbox and the problem is reported; doctor lists every missing folder', async () => {
+ const sb = await sandbox(); try {
+  await rm(sb.review, { recursive: true }); await rm(join(sb.root, '02_Admin & Finanzen', 'Verträge'), { recursive: true });
+  await put(sb, 'mystery.txt', 'something unclear'); await put(sb, 'v.txt', 'Mietvertrag Wohnung 5');
+  const r = await runOnce(sb.config, { apply: true, model: model({ needsReview: true }) });
+  expect(r.items.find(i => i.file === 'mystery.txt')).toMatchObject({ outcome: 'error', detail: 'folder_missing:_Inbox/Needs_Review' });
+  expect(r.items.find(i => i.file === 'v.txt')).toMatchObject({ outcome: 'error', detail: 'folder_missing:_Inbox/Needs_Review' }); // wanted review (Verträge missing), but review is missing too
+  expect((await inboxFiles(sb)).sort()).toEqual(['mystery.txt', 'v.txt']); expect(await exists(sb.review)).toBe(false);
+  const d = await doctor(sb.config, async () => ({ code: 1, output: '' }));
+  const tx = d.find(c => c.name.startsWith('taxonomy'))!; expect(tx.ok).toBe(false); expect(tx.detail).toContain('_Inbox/Needs_Review'); expect(tx.detail).toContain('02_Admin & Finanzen/Verträge');
  } finally { await sb.cleanup(); }
 });
 test('init: preview creates nothing; --yes creates only missing taxonomy folders (buckets, sub-folders, _Inbox); problems are refused', async () => {
@@ -135,11 +150,11 @@ test('doctor: probes RENAME_EXCL inside _Inbox, cleans up after itself, flags mi
   const probe = await probeExclusiveRename(layout); expect(probe.ok).toBe(true);
   expect(await tree(sb.root)).toEqual(before); // dot-prefixed probe folder and its files are gone again
   await put(sb, 'mine.txt', 'x'); // user files in _Inbox are untouched by the probe
-  await probeExclusiveRename(layout); expect(await readdir(sb.inbox)).toEqual(['mine.txt']);
+  await probeExclusiveRename(layout); expect(await inboxFiles(sb)).toEqual(['mine.txt']);
   await rm(join(sb.root, '01_Uni'), { recursive: true });
   const checks = await doctor({ ...sb.config, allowNonICloudRoot: false }, async () => ({ code: 1, output: '' }));
   const by = (n: string) => checks.find(c => c.name.includes(n))!;
-  expect(by('top-level folders')).toMatchObject({ ok: false, required: true }); expect(by('top-level folders').detail).toContain('01_Uni');
+  expect(by('taxonomy folders')).toMatchObject({ ok: false, required: true }); expect(by('taxonomy folders').detail).toContain('01_Uni');
   expect(by('root is iCloud Drive')).toMatchObject({ ok: false }); expect(by('root is iCloud Drive').detail).toContain('refuse');
   expect(by('exclusive no-clobber')).toMatchObject({ ok: true, required: true });
   expect((await probeExclusiveRename(layout, { disableNative: true })).ok).toBe(false);
@@ -159,7 +174,7 @@ test('apply modes refuse a root outside iCloud Drive unless allowNonICloudRoot; 
   await expect(runOnce(sb.config, { apply: true, kind: 'root', mode: 'sweep', model: model(), confirm: async () => true })).rejects.toThrow('not under');
   await expect(applyInit(layout, sb.config)).rejects.toBeInstanceOf(NonICloudRootError);
   expect((await runOnce(sb.config, { apply: false, model: model() })).items[0]).toMatchObject({ action: 'move' }); // dry-run is fine
-  expect(await readdir(sb.inbox)).toEqual(['sheet.txt']);
+  expect(await inboxFiles(sb)).toEqual(['sheet.txt']);
   // a root that really is iCloud Drive passes (HOME-relative)
   const home = join(sb.dir, 'home'), icloud = join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs'); await mkdir(join(icloud, '_Inbox'), { recursive: true });
   const l2 = await resolveLayout({ ...sb.config, root: icloud }); await expect(assertApplyAllowed(l2, { ...sb.config, root: icloud }, home)).resolves.toBeUndefined();
@@ -177,7 +192,7 @@ test('labelled dates: the labelled issue date wins; unlabelled or ambiguous date
 });
 test('known senders: whole word, exactly one, short names only in the letterhead', () => {
  expect(knownSenderIn('Hutchison Drei Austria GmbH\nRechnung', config)).toBe('Drei');
- expect(knownSenderIn('Wien Energie GmbH Rechnung', config)).toBe('Wien-Energie');
+ expect(knownSenderIn('Wien Energie GmbH Rechnung', config)).toBe('Wien Energie');
  expect(knownSenderIn('Wiener Linien und Wien Energie', config)).toBeNull(); // two senders: ambiguous
  expect(knownSenderIn('Dreieck Rechnung', config)).toBeNull(); // "Drei" inside another word
  expect(knownSenderIn(`A1 Telekom Austria\n${'x '.repeat(1000)}`, config)).toBe('A1');
@@ -248,7 +263,7 @@ test('transient model failure: the file stays in _Inbox as pending with backoff,
   const run = (m: ReturnType<typeof flaky>, apply = true) => runOnce(sb.config, { apply, model: m, now: () => t, sleep: async () => {} });
   const r1 = await run(flaky(false));
   expect(r1.items[0]).toMatchObject({ file: 'note.txt', outcome: 'pending', action: 'defer', reason: 'model_busy' }); expect(r1.counts.pending).toBe(1);
-  expect(await readdir(sb.inbox)).toEqual(['note.txt']); expect(await exists(sb.review)).toBe(false);
+  expect(await inboxFiles(sb)).toEqual(['note.txt']); expect(await readdir(sb.review)).toEqual([]);
   t += 60_000; const n = calls; const r2 = await run(flaky(true)); // 1 minute later: still backing off (5 min), no model call
   expect(calls).toBe(n); expect(r2.items[0]).toMatchObject({ outcome: 'pending', reason: 'model_busy' });
   t += 6 * 60_000; const r3 = await run(flaky(true)); // backoff over: retried and sorted
@@ -261,8 +276,10 @@ test('deferral gives up after model.maxDeferHours with a reason in Needs_Review;
   await put(sb, 'note.txt', 'a short unclear note'); await put(sb, 'contract.txt', 'Mietvertrag Wohnung 5'); let t = 1_000_000_000_000;
   const run = () => runOnce(sb.config, { apply: true, model: unavailable, now: () => t, sleep: async () => {} });
   expect((await run()).counts.pending).toBe(2);
-  t += 23 * 3_600_000; const mid = await run(); expect(mid.counts.pending).toBe(2); expect((await readdir(sb.inbox)).sort()).toEqual(['contract.txt', 'note.txt']);
-  t += 2 * 3_600_000; const end = await run();
+  t += 23 * 3_600_000; const mid = await run(); expect(mid.counts.pending).toBe(2); expect((await inboxFiles(sb)).sort()).toEqual(['contract.txt', 'note.txt']);
+  t += 2 * 3_600_000; const late = await run(); // 25 h, but only 2 attempts so far: still pending (give-up needs >= 3 apply-mode attempts)
+  expect(late.counts.pending).toBe(2);
+  t += 3_600_000; const end = await run(); // >= 24 h, 3 earlier attempts, and this final attempt fails too
   expect(end.items.map(i => `${i.file}:${i.outcome}:${i.reason}`).sort()).toEqual(['contract.txt:review:deferred_too_long:model_unavailable', 'note.txt:review:deferred_too_long:model_unavailable']);
   expect((await readdir(sb.review)).sort()).toEqual(['contract.txt', 'note.txt']);
  } finally { await sb.cleanup(); }
@@ -311,16 +328,16 @@ test('a file that is deleted or moved away by the user is dropped from the pendi
 
 // ---------------------------------------------------------------- F-19 held store
 test('undo holds live in their own store: they survive a config fingerprint change and cache eviction', async () => {
- const sb = await sandbox(); try {
-  await holdInCache(sb.config, 'abc', 'a.txt');
+ const sb = await sandbox(); const H1 = 'ab'.repeat(32); try {
+  await holdInCache(sb.config, H1, 'a.txt');
   const files = stateFiles(sb.config);
-  let held = await HeldStore.load(files.held); expect(held.has('abc', 'a.txt')).toBe(true);
+  let held = await HeldStore.load(files.held); expect(held.has(H1, 'a.txt')).toBe(true);
   const fp1 = await configFingerprint(sb.config), fp2 = await configFingerprint({ ...sb.config, routes: [...sb.config.routes].reverse() });
   expect(fp1).not.toBe(fp2);
   const c1 = await DecisionCache.load(files.cache, fp1); for (let i = 0; i < 5200; i++) c1.set(`h${i}`, 'f.txt', { route: null, name: 'f.txt', tier: 'none', reason: 'x', needsReview: true, renamed: false }); await c1.save();
   const c2 = await DecisionCache.load(files.cache, fp2); expect(c2.get('h5000', 'f.txt')).toBeNull();
-  held = await HeldStore.load(files.held); expect(held.has('abc', 'a.txt')).toBe(true);
-  held.release('abc', 'a.txt'); await held.save(); expect((await HeldStore.load(files.held)).has('abc', 'a.txt')).toBe(false);
+  held = await HeldStore.load(files.held); expect(held.has(H1, 'a.txt')).toBe(true);
+  held.release(H1, 'a.txt'); await held.save(); expect((await HeldStore.load(files.held)).has(H1, 'a.txt')).toBe(false);
  } finally { await sb.cleanup(); }
 });
 test('a restored (undone) file is not re-sorted by the next run, even after the cache is rebuilt', async () => {
@@ -330,7 +347,7 @@ test('a restored (undone) file is not re-sorted by the next run, even after the 
   await undoMoves(sb.config, await resolveLayout(sb.config), stateFiles(sb.config).history, { runId: r.runId }, { apply: true, undoRunId: newRunId() });
   await rm(stateFiles(sb.config).cache, { force: true });
   const again = await runOnce(sb.config, { apply: true, model: model() });
-  expect(again.items[0]).toMatchObject({ outcome: 'skipped', detail: 'held_after_undo' }); expect(await readdir(sb.inbox)).toEqual(['sheet.txt']);
+  expect(again.items[0]).toMatchObject({ outcome: 'skipped', detail: 'held_after_undo' }); expect(await inboxFiles(sb)).toEqual(['sheet.txt']);
   const forced = await runOnce(sb.config, { apply: true, model: model(), useCache: false }); expect(forced.counts.moved).toBe(1);
  } finally { await sb.cleanup(); }
 });
@@ -391,4 +408,19 @@ test('classify / eval do not crash on a transient model failure: the file is rep
   const { inspectFile } = await import('../src/evaluate');
   expect(await inspectFile(join(dir, 'u.txt'), { ...sb.config, classifier: join(sb.dir, 'missing') })).toMatchObject({ reason: 'model_unavailable', needsReview: false });
  } finally { await sb.cleanup(); }
+});
+
+// ---------------------------------------------------------------- re-review: multi-word known senders must produce a name without the model
+test('re-review: a multi-word known sender (Wien Energie, Wiener Wohnen) renames deterministically, no model call', async () => {
+ let calls = 0;
+ for (const [file, text, expected] of [
+  ['strom.txt', 'Wien Energie GmbH\nRechnung\nRechnungsdatum: 15.03.2025\nBetrag 80 EUR\n', '2025-03-15_Wien-Energie-Rechnung.txt'],
+  ['miete.txt', 'Mietvertrag\nVertragsdatum: 01.09.2026\nWiener Wohnen\n', '2026-09-01_Wiener-Wohnen-Vertrag.txt'],
+  ['drei.txt', 'Hutchison Drei Austria GmbH\nRechnung\nRechnungsdatum: 07.10.2026\n', '2026-10-07_Drei-Rechnung.txt']
+ ] as const) {
+  const d = await classify(file, text, config, { model: async () => { calls++; throw Error('model must not be called'); } });
+  const route = config.routes.find(r => r.id === d.route)!;
+  expect(targetName({ filename: file, text, route, documentDate: d.documentDate, sender: d.sender }, config)).toMatchObject({ name: expected, renamed: true });
+ }
+ expect(calls).toBe(0);
 });
