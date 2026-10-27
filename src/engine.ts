@@ -81,9 +81,9 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
  // Per-run circuit breaker: once the model failed transiently (timeout, unavailable, busy, crashed), later files in this run are not sent to it.
  // Without it a hung helper costs (classifierRetries + 1) x timeoutMs for EVERY file, with the run lock held.
  const inner: ModelCall = deps.model ?? callHelper; let tripped: HelperError | null = null;
- let reached = false; // reached: THIS file made a real helper call in this run
+ let reached = false, skipped = false; // reached: THIS file made a real helper call in this run; skipped: the open breaker answered instead of the model
  const direct: ModelCall = async (...args) => { reached = true; return inner(...args); }; // expired entries: always a real call, never the breaker
- const breaker: ModelCall = async (...args) => { if (tripped) throw new HelperError(tripped.message, tripped.exitCode, null, true); reached = true; return inner(...args); };
+ const breaker: ModelCall = async (...args) => { if (tripped) { skipped = true; throw new HelperError(tripped.message, tripped.exitCode, null, true); } reached = true; return inner(...args); };
  const MODEL_DOWN: Record<string, [string, number | null]> = { model_timeout: ['helper_timeout', null], model_unavailable: ['helper_unavailable', null], model_busy: ['helper_failed', 4], model_crashed: ['helper_failed', null] };
  for (const f of files) {
   let sha: string;
@@ -100,11 +100,11 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
   // An expired entry is NOT a verdict by itself (dry-run runs, a closed laptop or a long outage age it without any attempt): it gets exactly ONE real helper call in this run
   // (bypassing an open breaker, no retries, so a hung helper costs at most 1 x timeoutMs per expired file) and only a transient failure of THAT call sends it to review.
   const wasExpired = !!(deps.apply && mine && pend?.expired(mine, config));
-  reached = false;
+  reached = false; skipped = false;
   let a = await analyze(f.path, f.name, sha, wasExpired ? { ...config, classifierRetries: 0 } : config, { ...deps, model: wasExpired ? direct : breaker });
   if (a.transient && !tripped && reached && MODEL_DOWN[a.reason]) tripped = new HelperError(...MODEL_DOWN[a.reason]!); // this file really asked and already used its retries: stop asking for the rest of the run
   if (a.transient && pend) {
-   if (reached) { // an attempt = a real helper call for this file in this run
+   if (!skipped) { // an attempt = a real helper call OR any other transient failure that is the file's own (an OCR/pdftotext timeout): it backs off and may expire. Only the breaker's answer is not an attempt
     const ent = pend.touch(f.name, 'model', a.reason, { sha256: sha, attempt: true, apply: !!deps.apply });
     a = wasExpired ? reviewAnalysis(f.name, `deferred_too_long:${a.reason}`) : { ...a, detail: deferDetail(config, ent) };
    } else { // answered by the open breaker: not an attempt (no applyAttempts, no applySince, no backoff growth); the file stays pending and is asked on the next due run
