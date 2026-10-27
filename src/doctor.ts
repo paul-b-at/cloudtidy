@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { release } from 'node:os';
 import { dirname, join } from 'node:path';
 import { checkModel } from './classifier';
-import { type Config } from './config';
+import { oneFileMaxSeconds, worstCaseLockSeconds, type Config } from './config';
 import { exclusiveRename, exclusiveRenameSupported, type RenameOptions } from './fsx';
 import { agentState, installedPlist, isVersionedBunPath, type Exec, realExec } from './install';
 import { INBOX } from './config';
@@ -12,7 +12,8 @@ import { taxonomy } from './init';
 import { readStatus, stateFiles } from './state';
 import { pendingIntents, readRawHistory } from './history';
 
-export interface Check { name: string; ok: boolean; required: boolean; detail: string }
+/** `warn`: an optional check that failed in a way worth noticing (shown as `!`, not as the neutral `·`). */
+export interface Check { name: string; ok: boolean; required: boolean; detail: string; warn?: boolean }
 const ok = (p: string, mode: number) => access(p, mode).then(() => true, () => false);
 /**
  * No-clobber rename probe on the volume that really matters: a dot-prefixed probe folder inside `_Inbox` (same volume/filesystem as the
@@ -34,7 +35,7 @@ export async function probeExclusiveRename(layout: Layout, opts: RenameOptions =
 }
 /** Read-only diagnostics except the probe above (own dot-folder in _Inbox, removed again). Never creates taxonomy folders. */
 export async function doctor(config: Config, exec: Exec = realExec): Promise<Check[]> {
- const checks: Check[] = [], add = (name: string, pass: boolean, required: boolean, detail: string) => checks.push({ name, ok: pass, required, detail });
+ const checks: Check[] = [], add = (name: string, pass: boolean, required: boolean, detail: string, warn = false) => checks.push({ name, ok: pass, required, detail, ...(warn ? { warn: true } : {}) });
  const darwin = process.platform === 'darwin', major = Number.parseInt(release(), 10);
  add('macOS 26+', darwin && major >= 25, true, darwin ? `Darwin ${release()}` : `not macOS (${process.platform})`);
  // Apple Foundation Models need Apple silicon, and a bun running under Rosetta (x64) is a different binary for Full Disk Access / the helper's model access.
@@ -47,7 +48,7 @@ export async function doctor(config: Config, exec: Exec = realExec): Promise<Che
  const pdf = process.env.CLOUDTIDY_PDFTOTEXT || Bun.which('pdftotext');
  add('pdftotext (optional, brew install poppler)', !!pdf, false, pdf ? `${pdf} (install pins this absolute path in the LaunchAgent)` : 'absent: PDFs fall back to Vision OCR');
  let inboxOk = false, detail = config.root, layout: Layout | null = null;
- try { layout = await resolveLayout(config); inboxOk = (await lstat(layout.inbox)).isDirectory() && await ok(layout.inbox, constants.R_OK); detail = layout.inbox; } catch { detail = `${config.root}: cannot resolve root/_Inbox`; }
+ try { layout = await resolveLayout(config); inboxOk = (await lstat(layout.inbox)).isDirectory() && await ok(layout.inbox, constants.R_OK); detail = layout.inbox; } catch (e) { detail = (e as Error).message; } // e.g. `root folder not found: <path>`
  add('_Inbox readable', inboxOk, true, detail);
  if (layout) {
   const icloud = await isICloudRoot(layout);
@@ -70,9 +71,11 @@ export async function doctor(config: Config, exec: Exec = realExec): Promise<Che
  }
  const dangling = await readRawHistory(stateFiles(config).history).then(r => pendingIntents(r).length, () => -1);
  add('history journal has no unresolved moves', dangling === 0, false, dangling === 0 ? 'clean' : dangling > 0 ? `${dangling} move(s) with a write-ahead intent but no commit/abort (a crash or a failed rollback): the next apply run reconciles them; check "history" and the files` : 'history file unreadable');
+ add('run time budget bounds the lock', true, false, `maxRunSeconds ${config.maxRunSeconds}s, checked before each file; one file takes at most ~${oneFileMaxSeconds(config)}s, so the lock is held for at most ~${worstCaseLockSeconds(config)}s (LaunchAgent interval ${config.daemon.intervalSec}s${worstCaseLockSeconds(config) > config.daemon.intervalSec ? `: a long run makes the triggers during it skip` : ''})`);
  const st = await readStatus(config);
  if (st) {
-  add('last run: no file errors', !(st.counts?.errors), false, st.counts?.errors ? `${st.counts.errors} file(s) ended in an error (rollback_failed, folder_missing for Needs_Review, history/io): see the log and "review"/"history"` : 'none');
+  add('last run: file errors', !(st.counts?.errors), false, st.counts?.errors ? `${st.counts.errors} file(s) ended in an error (rollback_failed, folder_missing for Needs_Review, history/io): see the log and "review"/"history"` : 'none', true);
+  if (st.budget?.hit) add('last run: time budget', false, false, `the last ${st.budget.streak} run(s) in a row stopped at the ${config.maxRunSeconds}s budget (${st.budget.left} file(s) left in the latest): more files arrive than one run can handle, or the model is slow; raise maxRunSeconds or check "status"`, true);
   add('last run: model reachable', !!st.model?.available, false, `${st.context} run at ${st.time}: ${st.model ? `${st.model.available ? 'available' : 'unavailable'} (${st.model.reason})` : 'not checked'}`);
   add('last run: _Inbox readable', st.inboxReadable, false, `${st.context} context`);
   const launchd = st.context === 'launchd';
@@ -80,4 +83,4 @@ export async function doctor(config: Config, exec: Exec = realExec): Promise<Che
  } else add('LaunchAgent context has reached the model', false, false, 'no run recorded yet');
  return checks;
 }
-export const formatChecks = (cs: Check[]) => cs.map(c => `${c.ok ? '✓' : c.required ? '✗' : '·'} ${c.name} — ${c.detail}`).join('\n');
+export const formatChecks = (cs: Check[]) => cs.map(c => `${c.ok ? '✓' : c.required ? '✗' : c.warn ? '!' : '·'} ${c.name} — ${c.detail}`).join('\n');

@@ -7,9 +7,9 @@ import { makeJournal, type Outcome } from './history';
 import { HelperError } from './process';
 import { moveNoClobber } from './mover';
 import { targetName } from './naming';
-import { type Layout, type SourceKind } from './paths';
+import { assertDestDir, FOLDER_MISSING, UnsafePathError, type Layout, type SourceKind } from './paths';
 import { DecisionCache, HeldStore } from './state';
-import { MIN_APPLY_ATTEMPTS, type PendingEntry, type PendingStore } from './pending';
+import { BUSY_CAP, MIN_APPLY_ATTEMPTS, type PendingEntry, type PendingStore } from './pending';
 
 export interface Analysis {
  route: Route | null; tier: Tier; needsReview: boolean; reason: string;
@@ -67,17 +67,23 @@ export const plannedItem = (p: Planned): Item => p.analysis.held
  ...(p.analysis.note && !p.analysis.needsReview ? { detail: p.analysis.note } : {})
 };
 /** `apply`: this run may move files. Only apply-mode attempts count towards the give-up rule (pending.ts); dry-runs never expire a file. */
-export interface PlanDeps extends AnalyzeDeps { pending?: PendingStore | null; modelAvailable?: boolean; apply?: boolean }
+export interface PlanDeps extends AnalyzeDeps { pending?: PendingStore | null; modelAvailable?: boolean; apply?: boolean; /** Run time budget: checked before STARTING each file. */ budget?: { ms: number; elapsed: () => number } }
 /** The retry/give-up schedule for a file that needs the model (see pending.ts). */
+/** Past the maxDeferHours limit and enough apply attempts made: the next due attempt is the final one. */
+const more0 = (e: PendingEntry, config: Config) => e.applySince !== undefined && (e.applyAttempts ?? 0) >= MIN_APPLY_ATTEMPTS && e.lastSeen - e.applySince >= config.model.maxDeferHours * 3_600_000;
 function deferDetail(config: Config, e: PendingEntry): string {
  const next = `next try ${new Date(e.next).toISOString().slice(11, 16)}Z`;
  const n = e.applyAttempts ?? 0;
  if (e.applySince === undefined) return `attempt ${e.attempts}; ${next}; the ${config.model.maxDeferHours} h limit starts with the first run that applies`;
- const left = Math.max(0, Math.round((e.applySince + config.model.maxDeferHours * 3_600_000 - Date.now()) / 3_600_000));
- return `attempt ${n}; ${next}; goes to Needs_Review after ~${left}h and at least ${MIN_APPLY_ATTEMPTS} attempts, only if the model still fails then`;
+ if (e.reason === 'model_busy' && more0(e, config)) { const capH = Math.max(1, Math.round((e.applySince + BUSY_CAP * config.model.maxDeferHours * 3_600_000 - e.lastSeen) / 3_600_000)); return `attempt ${n}; ${next}; the model was busy at the final call, so the file stays pending; it goes to Needs_Review if the model is still busy after ~${capH} h, or when another attempt fails for any other reason`; }
+ const leftMs = e.applySince + config.model.maxDeferHours * 3_600_000 - e.lastSeen, more = Math.max(0, MIN_APPLY_ATTEMPTS - n);
+ const when = leftMs > 0 ? `after ~${Math.max(1, Math.round(leftMs / 3_600_000))} h${more ? ` and ${more} more attempt${more === 1 ? '' : 's'}` : ''}` : more ? `once ${more} more attempt${more === 1 ? ' has' : 's have'} been made (the ${config.model.maxDeferHours} h are over)` : 'at the next attempt';
+ return `attempt ${n}; ${next}; goes to Needs_Review ${when}, only if the model still fails then`;
 }
-export async function plan(files: { name: string; path: string; snapshot: Fingerprint }[], config: Config, deps: PlanDeps): Promise<{ planned: Planned[]; gone: string[] }> {
- const planned: Planned[] = [], gone: string[] = [], pend = deps.pending;
+/** A file the open breaker answered for: not asked, not counted. */
+const skippedDetail = (e: PendingEntry) => `model failed earlier in this run, not counted as an attempt${e.applyAttempts ? ` (${e.applyAttempts} so far)` : ''}; asked again on the next due run`;
+export async function plan(files: { name: string; path: string; snapshot: Fingerprint }[], config: Config, deps: PlanDeps): Promise<{ planned: Planned[]; gone: string[]; left: number }> {
+ const planned: Planned[] = [], gone: string[] = [], pend = deps.pending; let left = 0;
  // Per-run circuit breaker: once the model failed transiently (timeout, unavailable, busy, crashed), later files in this run are not sent to it.
  // Without it a hung helper costs (classifierRetries + 1) x timeoutMs for EVERY file, with the run lock held.
  const inner: ModelCall = deps.model ?? callHelper; let tripped: HelperError | null = null;
@@ -86,6 +92,8 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
  const breaker: ModelCall = async (...args) => { if (tripped) { skipped = true; throw new HelperError(tripped.message, tripped.exitCode, null, true); } reached = true; return inner(...args); };
  const MODEL_DOWN: Record<string, [string, number | null]> = { model_timeout: ['helper_timeout', null], model_unavailable: ['helper_unavailable', null], model_busy: ['helper_failed', 4], model_crashed: ['helper_failed', null] };
  for (const f of files) {
+  // Time budget: checked before a file is STARTED. Once spent, the rest is left completely untouched (no pending change, no attempt, no review): it is simply next in line.
+  if (deps.budget && deps.budget.elapsed() >= deps.budget.ms) { left++; continue; }
   let sha: string;
   try { sha = await sha256File(f.path); } catch { gone.push(f.name); continue; }
   const now = await fingerprint(f.path);
@@ -93,7 +101,7 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
   const add = (analysis: Analysis) => planned.push({ ...f, sha256: sha, analysis });
   if (f.snapshot.size === 0) { pend?.clear(f.name); add(reviewAnalysis(f.name, 'empty_file')); continue; } // grace period already elapsed (run.ts)
   const e = pend?.get(f.name), mine = e && e.kind === 'model' && e.sha256 === sha ? e : undefined;
-  if (pend && mine && !(deps.apply && pend.expired(mine, config)) && !pend.due(mine, !!deps.modelAvailable)) { // waiting for the backoff: no model call
+  if (pend && mine && !(deps.apply && pend.expired(mine, config) && mine.reason !== 'model_busy') && !pend.due(mine, !!deps.modelAvailable)) { // waiting for the backoff: no model call. An expired entry bypasses it (one final call), except after a `model_busy` final call: that keeps its backoff, otherwise it would be re-asked on every run and starve the files behind it
    add({ ...reviewAnalysis(f.name, mine.reason), needsReview: false, transient: true, detail: deferDetail(config, mine) });
    continue;
   }
@@ -106,15 +114,34 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
   if (a.transient && pend) {
    if (!skipped) { // an attempt = a real helper call OR any other transient failure that is the file's own (an OCR/pdftotext timeout): it backs off and may expire. Only the breaker's answer is not an attempt
     const ent = pend.touch(f.name, 'model', a.reason, { sha256: sha, attempt: true, apply: !!deps.apply });
-    a = wasExpired ? reviewAnalysis(f.name, `deferred_too_long:${a.reason}`) : { ...a, detail: deferDetail(config, ent) };
+    a = wasExpired && (a.reason !== 'model_busy' || pend.hardExpired(ent, config)) ? reviewAnalysis(f.name, `deferred_too_long:${a.reason}`) : { ...a, detail: deferDetail(config, ent) }; // `model_busy` on the final call says nothing about the file: it counts as an attempt but stays pending (until BUSY_CAP x maxDeferHours, then review)
    } else { // answered by the open breaker: not an attempt (no applyAttempts, no applySince, no backoff growth); the file stays pending and is asked on the next due run
     const ent = pend.touch(f.name, 'model', a.reason, { sha256: sha, attempt: false, apply: !!deps.apply });
-    a = { ...a, detail: `not asked this run (the model failed earlier in this run); ${deferDetail(config, ent)}` };
+    a = { ...a, detail: skippedDetail(ent) };
    }
   } else if (!a.transient) pend?.clear(f.name);
   add(a);
  }
- return { planned, gone };
+ return { planned, gone, left };
+}
+/**
+ * What `--apply` would do, as far as the destination goes: a move into a folder that does not exist (or is unsafe) becomes the same review
+ * the mover would produce (`folder_missing:<path>`, `destination_unsafe`). A missing Needs_Review is reported, not hidden.
+ */
+export async function previewItem(layout: Layout, config: Config, p: Planned): Promise<Item> {
+ const item = plannedItem(p), a = p.analysis;
+ if (item.outcome !== 'planned') return item;
+ const check = async (dir: string): Promise<string | null> => { try { await assertDestDir(layout, config, dir); return null; } catch (e) { return e instanceof UnsafePathError ? e.reason : `destination_unreadable:${(e as NodeJS.ErrnoException).code ?? 'error'}`; } }; // never throw: one unreadable folder must not abort the whole run/preview
+ if (item.action === 'move') {
+  const bad = await check(join(layout.root, ...a.route!.folder.split('/')));
+  if (!bad) return item;
+  if (bad.startsWith('destination_unreadable')) return { ...item, outcome: 'error', reason: bad, renamed: false, detail: 'the destination folder cannot be read: this file would stay in _Inbox with an error (the other files are not affected)' }; // the mover's own result for it (it never reviews an I/O error)
+  const reason = bad.startsWith(FOLDER_MISSING) ? bad : 'destination_unsafe';
+  const rv = await check(layout.review);
+  return { ...item, action: 'review', reason, renamed: false, destination: rel(INBOX, REVIEW, p.name), ...(rv ? { detail: `${rv}: Needs_Review is not usable either, the file would stay in place (run "init --yes")` } : {}) };
+ }
+ const rv = await check(layout.review);
+ return rv ? { ...item, detail: `${rv}: Needs_Review is not usable, the file would stay in place (run "init --yes")` } : item;
 }
 export interface ApplyCtx { layout: Layout; config: Config; kind: SourceKind; runId: string; mode: 'run' | 'sweep'; historyFile: string; rename?: RenameOptions; deviceOf?: (dir: string) => Promise<number> }
 /** Applies one planned item. Every move is journaled write-ahead (intent before the rename, commit after it). */
@@ -123,7 +150,7 @@ export async function applyOne(ctx: ApplyCtx, p: Planned): Promise<Item> {
  const journal = (outcome: Outcome, reason: string) => makeJournal(ctx.historyFile, { runId: ctx.runId, mode: ctx.mode, source: p.path, sha256: p.sha256, size: p.snapshot.size, ino: p.snapshot.ino, route: p.analysis.route?.id ?? null, tier: p.analysis.tier, outcome, reason: outcome === 'moved' && p.analysis.note ? `${reason}:${p.analysis.note}` : reason, renamed: outcome === 'moved' && p.analysis.renamed });
  const toReview = async (reason: string, outcome: 'review' | 'duplicate', detail?: string): Promise<Item> => {
   const r = await moveNoClobber({ layout: ctx.layout, config: ctx.config, kind: ctx.kind, src: p.path, snapshot: p.snapshot, sha256: p.sha256, destDir: ctx.layout.review, name: p.name, rename: ctx.rename, deviceOf: ctx.deviceOf, journal: journal(outcome, reason) });
-  if (r.kind === 'moved') return { ...base, action: 'review', outcome, reason, destination: rel(INBOX, REVIEW, basename(r.to)), ...(detail ? { detail } : {}) };
+  if (r.kind === 'moved') return { ...base, action: 'review', outcome, reason, renamed: false, destination: rel(INBOX, REVIEW, basename(r.to)), ...(detail ? { detail } : {}) }; // a review keeps the original name: never tagged `renamed`
   if (r.kind === 'duplicate') return { ...base, action: 'review', outcome: 'skipped', reason, detail: 'identical_file_already_in_review' };
   if (r.reason === 'folder_missing') return { ...base, action: 'review', outcome: 'error', reason, detail: r.detail ?? 'folder_missing' }; // Needs_Review itself is missing: the file stays where it is, and this is reported (run `init --yes`)
   return { ...base, action: 'review', outcome: r.reason === 'source_changed' || r.reason === 'source_missing' ? 'skipped' : 'error', reason, detail: r.reason };

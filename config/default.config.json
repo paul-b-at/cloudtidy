@@ -13,6 +13,7 @@
   "emptyGraceMinutes": 10,
   "classifierRetries": 1,
   "lockWaitMs": 30000,
+  "maxRunSeconds": 300,
   "naming": {
     "datePrefix": false
   },
@@ -30,7 +31,8 @@
       "aliases": [
         "Hutchison Drei Austria",
         "Hutchison Drei"
-      ]
+      ],
+      "commonWord": true
     },
     {
       "name": "A1",
@@ -44,7 +46,8 @@
       "aliases": [
         "Magenta Telekom",
         "T-Mobile Austria"
-      ]
+      ],
+      "commonWord": true
     },
     {
       "name": "Wien Energie",
@@ -75,7 +78,8 @@
     },
     {
       "name": "Verbund",
-      "aliases": []
+      "aliases": [],
+      "commonWord": true
     },
     {
       "name": "Wiener Städtische",
@@ -91,7 +95,13 @@
     },
     {
       "name": "Allianz",
-      "aliases": []
+      "aliases": [
+        "Allianz Versicherung",
+        "Allianz Versicherungs AG",
+        "Allianz Versicherungs-AG",
+        "Allianz Elementar"
+      ],
+      "commonWord": true
     }
   ],
   "routes": [

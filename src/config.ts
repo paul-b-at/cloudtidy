@@ -15,7 +15,7 @@ export interface Route {
  patterns: string[];
 }
 /** A sender recognised deterministically in invoice/contract text (no model call). `aliases` are other spellings of the same organisation. */
-export interface KnownSender { name: string; aliases: string[] }
+export interface KnownSender { name: string; aliases: string[]; /** An ordinary word as well as a company (Drei, Magenta, Verbund, Allianz): only counts in the letterhead window or before a company suffix. */ commonWord?: boolean }
 export interface Config {
  version: 1;
  root: string;
@@ -37,6 +37,8 @@ export interface Config {
  classifierRetries: number;
  /** How long `run`/`sweep`/`undo` wait for another cloudtidy process before giving up. */
  lockWaitMs: number;
+ /** Time budget of one run/sweep (seconds): no new file is started once it is spent; the rest waits, untouched, for the next run. */
+ maxRunSeconds: number;
  naming: { datePrefix: boolean };
  daemon: { apply: boolean; notify: boolean; intervalSec: number };
  /** Files that need the model while it is unavailable/busy stay pending in `_Inbox` for this long, then go to review. */
@@ -53,7 +55,7 @@ export const ARCHIVE = '_Archiv';
 export const BUILTIN_BLOCKLIST = [ARCHIVE, 'Pages', 'Keynote', 'Numbers', 'Obsidian', 'Goodnotes', 'Shortcuts', 'Preview', 'TextEdit', 'Automator', 'Script Editor', 'QuickTime Player', 'Scriptable'];
 const buckets = new Set(['01_Uni', '02_Admin & Finanzen', '03_Projekte & Dev', '04_Persönlich']);
 const RENAME_FOLDERS = ['02_Admin & Finanzen/Rechnungen', '02_Admin & Finanzen/Verträge'];
-const TOP_KEYS = new Set(['version', 'root', 'classifier', 'ocr', 'timeoutMs', 'routes', 'blocklist', 'stateDir', 'logDir', 'debounceMs', 'stabilityRetries', 'classifierRetries', 'lockWaitMs', 'naming', 'daemon', 'model', 'knownSenders', 'allowNonICloudRoot', 'emptyGraceMinutes']);
+const TOP_KEYS = new Set(['version', 'root', 'classifier', 'ocr', 'timeoutMs', 'routes', 'blocklist', 'stateDir', 'logDir', 'debounceMs', 'stabilityRetries', 'classifierRetries', 'lockWaitMs', 'maxRunSeconds', 'naming', 'daemon', 'model', 'knownSenders', 'allowNonICloudRoot', 'emptyGraceMinutes']);
 
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function record(x: unknown): x is Record<string, unknown> { return !!x && typeof x === 'object' && !Array.isArray(x); }
@@ -77,10 +79,11 @@ function parseSenders(x: unknown): KnownSender[] {
  if (!Array.isArray(x) || x.length > 200) throw Error('Invalid configuration: "knownSenders" must be a list of at most 200 entries');
  return x.map(v => {
   if (!record(v) || typeof v.name !== 'string' || !SENDER_LABEL.test(v.name) || v.name.length < 2) throw Error('Invalid configuration: "knownSenders[].name" must be a 2-60 character name (letters, digits, space . & \' -) and an object with name/aliases only');
-  for (const k of Object.keys(v)) if (k !== 'name' && k !== 'aliases') throw Error(`Invalid configuration: unknown knownSenders key "${k}"`);
+  for (const k of Object.keys(v)) if (k !== 'name' && k !== 'aliases' && k !== 'commonWord') throw Error(`Invalid configuration: unknown knownSenders key "${k}"`);
   const aliases = v.aliases ?? [];
   if (!Array.isArray(aliases) || aliases.length > 8 || !aliases.every(a => typeof a === 'string' && SENDER_LABEL.test(a) && a.length >= 2)) throw Error('Invalid configuration: "knownSenders[].aliases" must be a list of at most 8 names of 2-60 characters (letters, digits, space . & \' -)');
-  return { name: v.name, aliases: aliases as string[] };
+  if (v.commonWord !== undefined && typeof v.commonWord !== 'boolean') throw Error('Invalid configuration: "knownSenders[].commonWord" must be true or false');
+  return { name: v.name, aliases: aliases as string[], ...(v.commonWord ? { commonWord: true } : {}) };
  });
 }
 export function validateConfig(x: unknown): Config {
@@ -135,12 +138,19 @@ export function validateConfig(x: unknown): Config {
   emptyGraceMinutes: intIn(x.emptyGraceMinutes, 10, 0, 1440, 'emptyGraceMinutes'),
   classifierRetries: intIn(x.classifierRetries, 1, 0, 3, 'classifierRetries'),
   lockWaitMs: intIn(x.lockWaitMs, 30000, 0, 300000, 'lockWaitMs'),
+  maxRunSeconds: intIn(x.maxRunSeconds, 300, 60, 3600, 'maxRunSeconds'),
   naming: { datePrefix: bool(naming.datePrefix, false, 'naming.datePrefix') },
   daemon: { apply: bool(daemon.apply, false, 'daemon.apply'), notify: bool(daemon.notify, true, 'daemon.notify'), intervalSec: intIn(daemon.intervalSec, 120, 60, 86400, 'daemon.intervalSec') },
   model: { maxDeferHours: intIn(model.maxDeferHours, 24, 1, 720, 'model.maxDeferHours') },
   knownSenders, allowNonICloudRoot: bool(x.allowNonICloudRoot, false, 'allowNonICloudRoot')
  };
 }
+/**
+ * Longest a single file can take once it has been started: PDF text (timeout) then OCR (timeout), then the model ((retries + 1) calls plus the
+ * 0.5 s, 1 s, ... pauses between them). The lock is held for at most `maxRunSeconds` + this, because the budget is only checked between files.
+ */
+export const oneFileMaxSeconds = (c: Pick<Config, 'timeoutMs' | 'classifierRetries'>) => Math.ceil((c.timeoutMs * (c.classifierRetries + 3) + 500 * c.classifierRetries * (c.classifierRetries + 1) / 2) / 1000);
+export const worstCaseLockSeconds = (c: Pick<Config, 'timeoutMs' | 'classifierRetries' | 'maxRunSeconds'>) => c.maxRunSeconds + oneFileMaxSeconds(c);
 export const expandHome = (s: string, base = process.cwd()) => s === '~' ? homedir() : s.startsWith('~/') ? resolve(homedir(), s.slice(2)) : resolve(base, s);
 export function resolvePaths(c: Config): Config {
  return { ...c, root: expandHome(c.root), classifier: expandHome(c.classifier, repoRoot), ocr: expandHome(c.ocr, repoRoot), stateDir: expandHome(c.stateDir), logDir: expandHome(c.logDir) };

@@ -1,5 +1,5 @@
 import { extname } from 'node:path';
-import { safeName, type Config, type Route } from './config';
+import { safeName, type Config, type KnownSender, type Route } from './config';
 
 const MONTHS: Record<string, number> = {
  jan: 1, januar: 1, jänner: 1, january: 1, feb: 2, februar: 2, february: 2, mar: 3, mär: 3, märz: 3, maerz: 3, march: 3, apr: 4, april: 4, mai: 5, may: 5,
@@ -76,20 +76,69 @@ export function senderLabel(raw: string): string | null {
  label = label.replace(/[^\p{L}\p{N} -]/gu, '').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40).replace(/-$/, '');
  return label.length >= 2 ? label : null;
 }
-const SHORT_SENDER_WINDOW = 1500;
+const SHORT_SENDER_WINDOW = 1500, LETTERHEAD_LINES = 6;
+/** A company form or country right after the name: "Drei Austria", "VERBUND AG", "Allianz SE". */
+const COMPANY_SUFFIX = /^[\s,.-]*(?:austria|österreich|gmbh|gesmbh|ag|kg|og|se|e\.u\.|ltd|llc|inc|corp|plc)(?![\p{L}\p{N}])/iu;
+const spellingRe = (v: string) => new RegExp(`(?<![\\p{L}\\p{N}])${esc(v)}(?![\\p{L}\\p{N}])`, 'gu');
+const spellings = (k: KnownSender) => [k.name, ...k.aliases].map(sp => ({ sp: sp.normalize('NFC'), alias: sp !== k.name }));
+/** The configured spelling or its ALL-CAPS form (invoices often print the letterhead in capitals): never any other case ("drei" in a sentence is a number). */
+const variants = (sp: string) => new Set([sp, sp.toUpperCase()]);
 /**
- * Canonical names of configured known senders (Drei, A1, Wien Energie, ...) that the text mentions as a whole word under any of
- * their spellings. Names shorter than 3 characters (A1) only count in the first 1500 characters (letterhead), where "A1" is a
- * company and not a paper size.
+ * Canonical names of configured known senders (Drei, A1, Wien Energie, ...) that the text mentions as a whole word in the configured
+ * spelling (or an alias, or the same in capitals). Case matters: "Kaution drei Monatsmieten" is not Drei.
+ * - Names shorter than 3 characters (A1) only count in the first 1500 characters (letterhead), where "A1" is a company and not a paper size.
+ * - Ordinary words (`commonWord`: Drei, Magenta, Verbund, Allianz, ...) have no window at all: they count only before a company suffix ("Drei GmbH", "Drei Austria", "VERBUND AG")
+ *   or when the name stands ALONE on one of the first 6 non-empty lines (a letterhead), or opens such a line before a document word ("Drei Rechnung"). "Kaution: Drei Monatsmieten" and "Im Verbund mit der Gemeinde" are text. Aliases are specific names and always count.
  */
 export function knownSenderMatches(text: string, config: Pick<Config, 'knownSenders'>): Set<string> {
- const hay = collapse(text), out = new Set<string>();
+ const hay = text.normalize('NFC').replace(/\s+/g, ' '), out = new Set<string>();
+ const head = text.normalize('NFC').split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, LETTERHEAD_LINES);
  for (const k of config.knownSenders) {
-  for (const spelling of [k.name, ...k.aliases]) {
-   if (wordIn(spelling, spelling.length < 3 ? hay.slice(0, SHORT_SENDER_WINDOW) : hay)) { out.add(k.name); break; }
+  found: for (const { sp, alias } of spellings(k)) {
+   const common = !!k.commonWord && !alias;
+   for (const v of variants(sp)) {
+    if (common && head.some(l => l === v || (l.startsWith(`${v} `) && isDocWord(l.slice(v.length + 1).split(/[^\p{L}\p{N}]+/u)[0] ?? '')))) { out.add(k.name); break found; } // alone on a letterhead line, or a title line "Drei Rechnung"
+    for (const m of hay.matchAll(spellingRe(v))) {
+     if (common ? COMPANY_SUFFIX.test(hay.slice(m.index! + v.length, m.index! + v.length + 24)) : sp.length < 3 ? m.index! < SHORT_SENDER_WINDOW : true) { out.add(k.name); break found; }
+    }
+   }
   }
  }
  return out;
+}
+const PRIMARY_SENDER = /^[ \t]*(?:Absender|Rechnungssteller)[ \t]*[:：][ \t]*(.{2,120}?)[ \t]*$/imu;
+const SECONDARY_SENDER = /^[ \t]*(?:Sender|From)[ \t]*[:：][ \t]*(.{2,120}?)[ \t]*$/imu;
+/** Document words that open a title line ("Rechnung Bau GmbH", "Mietvertrag Nr. 5"): never an issuer. */
+const DOC_WORDS = new Set(`rechnung rechnungen vertrag verträge vertraege polizze polizzen gutschrift mahnung angebot beleg quittung kassabon kontoauszug abrechnung jahresabrechnung bescheid zahlungserinnerung invoice invoices contract contracts agreement receipt`.split(/\s+/));
+export const isDocWord = (w: string) => { const l = w.toLowerCase(); return DOC_WORDS.has(l) || /(?:vertrag|rechnung)$/.test(l); };
+/**
+ * Look-alike guard (allowlist): a sender may only contain Latin-script letters (Basic Latin, Latin-1 Supplement, Latin Extended-A/B: umlauts, ß, é, ...), digits, space and `& . , - '`,
+ * and must not change under NFKC (ligatures, fullwidth letters, math-bold, ... are compatibility look-alikes). Cyrillic, Greek, Cherokee, Coptic, Lisu, Armenian, ... are all refused,
+ * whether mixed into a Latin word or as a whole word.
+ */
+const SENDER_ALLOWED = /^[A-Za-z0-9\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F .,&'\-]+$/u;
+export const senderCharsOk = (s: string) => { const n = s.normalize('NFC'); return n === s.normalize('NFC') && n.normalize('NFKC') === n && SENDER_ALLOWED.test(n); };
+/**
+ * A sender the document states itself: the first `Absender:` line (only if there is none, a `Sender:`/`From:` line), else (only to settle a known-sender hit)
+ * a letterhead line that ends in a company form. The stated value wins as a whole ("Absender: Evil Corp, Drei Austria" is Evil Corp): a known sender counts only
+ * when the value STARTS with it. A candidate that is rejected falls through to the next one. Validated like any model suggestion.
+ */
+function statedSender(text: string, config: Pick<Config, 'knownSenders'>, letterhead: boolean): string | null {
+ const resolve = (value: string): string | null => {
+  const c = value.split(/[,;|\uFF0C\u3001\u060C\u061B\/\t]|\p{Zs}{2,}/u)[0]!.trim();
+  if (c.length < 2 || isDocWord(c.split(/[^\p{L}\p{N}]+/u)[0] ?? '') || !senderCharsOk(c)) return null;
+  const k = config.knownSenders.find(k => spellings(k).some(({ sp }) => [...variants(sp)].some(v => c === v || (c.startsWith(v) && !/^[\p{L}\p{N}]/u.test(c.slice(v.length))))));
+  if (k) return knownSenderMatches(c, { knownSenders: [k] }).size > 0 && knownSenderMatches(text, { knownSenders: [k] }).size > 0 ? k.name : null; // known: also in the whole text, under the same rules
+  return validatedSender(c, text, config) ? c : null;
+ };
+ const labelled = (PRIMARY_SENDER.exec(text) ?? SECONDARY_SENDER.exec(text))?.[1];
+ const l = labelled ? resolve(labelled) : null;
+ if (l) return l;
+ if (!letterhead) return null;
+ for (const line of text.split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 8)) {
+  if (line.length <= 80 && LEGAL.test(line) && /^[\p{L}\p{N}][\p{L}\p{N} .,&'\-]*$/u.test(line)) { const r = resolve(line); if (r) return r; }
+ }
+ return null;
 }
 /** A known sender found without any model: the canonical configured name when exactly one distinct sender is in the text, else null (several => ambiguous). */
 export function knownSenderIn(text: string, config: Pick<Config, 'knownSenders'>): string | null {
@@ -109,9 +158,10 @@ const onlyStopwords = (s: string) => { const words = s.toLowerCase().split(/[^\p
 export function validatedSender(candidate: string | null, text: string, config: Pick<Config, 'knownSenders'> = { knownSenders: [] }): string | null {
  if (!candidate) return null;
  const raw = candidate.normalize('NFC').trim();
- if (raw.length < 2 || raw.length > 80 || !/^[\p{L}\p{N}][\p{L}\p{N} .,&'\-]*$/u.test(raw)) return null;
+ if (raw.length < 2 || raw.length > 80 || !/^[\p{L}\p{N}][\p{L}\p{N} .,&'\-]*$/u.test(raw) || !senderCharsOk(raw)) return null;
  const key = collapse(raw), known = config.knownSenders.find(k => [k.name, ...k.aliases].some(x => collapse(x) === key));
- if (known && knownSenderMatches(text, config).has(known.name)) return senderLabel(known.name);
+ if (known) return knownSenderMatches(text, config).has(known.name) ? senderLabel(known.name) : null; // a known name only counts where knownSenderMatches accepts it ("im Verbund" is not VERBUND): never via the generic whole-word check below
+ if (!known && isDocWord(raw.split(/[^\p{L}\p{N}]+/u)[0] ?? '')) return null; // a title ("Rechnung Bau GmbH") is never an issuer, whoever suggests it
  if (raw.length < 3 && !known) return null;
  if (!known && onlyStopwords(raw)) return null; // `Die`, `Der`, `Re`, `An`, `Sehr`, `Dear` ... would pass the whole-word check in any document: a prompt-injected or confused model must not pick them
  if (!wordIn(raw, collapse(text))) return null;
@@ -162,5 +212,8 @@ export function targetName(input: NameInput, config: Config): NameResult {
 }
 /** Deterministic naming inputs found in the text itself (no model): the document's labelled date and a configured known sender. */
 export function extractNaming(text: string, route: Route, config: Config): { date: string | null; sender: string | null } {
- return { date: labelledDate(text), sender: route.rename ? knownSenderIn(text, config) : null };
+ if (!route.rename) return { date: labelledDate(text), sender: null };
+ // A sender the document states itself beats a bare known-sender hit (a letterhead line with a company form settles several hits too).
+ const hits = knownSenderMatches(text, config), stated = statedSender(text, config, hits.size > 0);
+ return { date: labelledDate(text), sender: stated ?? (hits.size === 1 ? [...hits][0]! : null) };
 }

@@ -1,0 +1,3 @@
+Rental Agreement
+Landlord: E. Example, Tenant: M. Sample. The tenant rents the flat at Example Street 5 from 1 December 2026 for 12 months.
+Monthly rent EUR 750 plus utilities. Notice period: 3 months.

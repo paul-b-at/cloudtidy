@@ -100,6 +100,8 @@ export interface Status {
  inboxReadable: boolean;
  counts: Record<string, number>;
  message?: string;
+ /** Did this run stop because of `maxRunSeconds`? `streak` = consecutive recorded runs that did (a daemon that always hits it is flagged by status/doctor). */
+ budget?: { hit: boolean; left: number; streak: number };
 }
 export const writeStatus = async (c: Config, s: Status) => { await ensureStateDir(c); await writeJsonAtomic(stateFiles(c).status, s); };
 export const readStatus = (c: Config) => readJson<Status>(stateFiles(c).status);

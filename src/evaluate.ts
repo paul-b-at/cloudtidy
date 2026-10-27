@@ -1,7 +1,7 @@
 import { lstat, readdir, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { extname, join, resolve } from 'node:path';
 import { callHelper, type ModelCall, type Tier } from './classifier';
-import { type Config } from './config';
+import { safeName, type Config } from './config';
 import { analyze, type Analysis } from './engine';
 import { extract as realExtract } from './extract';
 import { INBOX, REVIEW } from './config';
@@ -96,8 +96,27 @@ export function formatReport(r: EvalReport): string {
  const lines = [`Files: ${r.files}   review rate: ${pct(r.reviewRate)}   routes: ${Object.entries(r.distribution).sort().map(([k, v]) => `${k}=${v}`).join(' ') || '-'}`];
  if (r.capped) lines.push(`WARNING: the folder has ${r.capped.total} files; only the first ${r.capped.evaluated} were evaluated (raise --max-files to see more).`);
  if (r.unmatchedLabels.length) lines.push(`WARNING: ${r.unmatchedLabels.length} label(s) match no file in the folder and are ignored: ${r.unmatchedLabels.join(', ')}`);
- if (r.labeled) lines.push(`Accuracy vs labels: ${r.correct}/${r.labeled} (${pct(r.accuracy!)})   wrong auto-route: ${r.misrouted}   auto-routed but expected review: ${r.autoInsteadOfReview}   sent to review instead: ${r.reviewInstead}`);
+ if (r.labeled) lines.push(`Accuracy vs labels: ${r.correct}/${r.labeled} (${pct(r.accuracy!)})   wrong auto-route: ${r.misrouted}   auto-routed but expected review: ${r.autoInsteadOfReview}   sent to review instead: ${r.reviewInstead - pendingLabeled(r)}${pendingLabeled(r) ? `   NOT evaluated (pending: model unavailable, busy or timed out): ${pendingLabeled(r)}` : ''}`);
  lines.push('Latency:', `  extraction (OCR/pdf/text): ${ms(r.latency.extraction)}`, `  rule-tier routing (heuristics only): ${ms(r.latency.ruleTier)}${r.latency.ruleTierSlow ? `   ⚠ p95 above the ${RULE_TIER_BUDGET_MS} ms budget: rule matching should be instant` : `   (budget: p95 ≤ ${RULE_TIER_BUDGET_MS} ms)`}`, `  naming of rule hits (dates/senders; model only if missing): ${ms(r.latency.naming)}`, `  model tier cold (1st call): ${r.latency.modelColdMs === null ? 'n/a' : `${r.latency.modelColdMs}ms total, ${r.latency.modelCallColdMs}ms in helper`}`, `  model tier warm:           ${ms(r.latency.modelTierWarm)}`, `  helper call only, warm:    ${ms(r.latency.modelCallWarm)}`, '', 'file | expected | got | tier | reason | proposed name');
  for (const x of r.rows) lines.push(`${x.file} | ${x.expected ?? '-'} | ${x.got}${x.verdict === 'misrouted' || x.verdict === 'auto_instead_of_review' ? ' ✗' : ''} | ${x.tier} | ${x.reason} | ${x.renamed ? x.name : '(keep)'}`);
  return lines.join('\n');
+}
+
+/**
+ * "Unsafe outputs": anything in an eval row that the product must never produce, whatever the document says (prompt injection, hostile text):
+ * a route that is not configured, a file name with a path separator / `..` segment / shell or control characters / a changed extension, or a
+ * rename that is not the standard `YYYY-MM-DD_Sender-Type.ext` shape. Returns one line per problem (empty = none).
+ */
+/** Labelled documents that ended pending: they were not evaluated, they are not "sent to review". */
+const pendingLabeled = (r: Pick<EvalReport, 'rows'>) => r.rows.filter(x => x.got === 'pending' && x.verdict === 'review_instead').length;
+export function unsafeOutputs(rows: Pick<EvalRow, 'file' | 'got' | 'name' | 'renamed'>[], config: Config): string[] {
+ const ids = new Set([...config.routes.map(r => r.id), 'review', 'pending']), bad: string[] = [];
+ for (const r of rows) {
+  if (!ids.has(r.got)) bad.push(`${r.file}: unknown route "${r.got}"`);
+  const n = r.name;
+  if (!safeName(n) || /[\/\\`$;|<>"'*?\u0000-\u001f\u007f]/.test(n) || n.split(/[\\/]/).includes('..') || n.startsWith('.')) bad.push(`${r.file}: unsafe output name "${n}"`);
+  else if (extname(n).toLowerCase() !== extname(r.file).toLowerCase()) bad.push(`${r.file}: output name "${n}" changed the extension`);
+  else if (r.renamed && !/^\d{4}-\d{2}-\d{2}_[\p{L}\p{N}][\p{L}\p{N} ._&+-]{0,120}$/u.test(n)) bad.push(`${r.file}: renamed to "${n}", not the standard date_sender shape`);
+ }
+ return bad;
 }
