@@ -121,7 +121,7 @@
       "rename": true,
       "docType": "Vertrag",
       "patterns": [
-        "Vertrag(?:s\\p{L}*|e|en)?|(?:Miet|Kauf|Arbeits|Dienst|Werk)vertrag(?:s\\p{L}*)?|Polizzen?|\\p{L}*(?<!sozial)versicherung(?:s\\p{L}*)?"
+        "Vertrag(?:s\\p{L}*|e|en)?|(?:Miet|Kauf|Arbeits|Dienst|Werk)vertrag(?:s\\p{L}*)?|Polizzen?|\\p{L}*(?<!sozial)versicherung(?!s?(?:nummer|daten))(?:s\\p{L}*)?"
       ]
     },
     {
