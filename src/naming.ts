@@ -13,24 +13,49 @@ function iso(y: number, m: number, d: number): string | null {
  return `${y}-${pad(m)}-${pad(d)}`;
 }
 const year = (s: string) => s.length === 2 ? 2000 + Number(s) : Number(s);
+export interface FoundDate { iso: string; index: number; raw: string }
+/** Every unambiguous calendar date in the text with its position (see datesInText for the accepted formats). */
+export function scanDates(text: string): FoundDate[] {
+ text = text.normalize('NFC');
+ const out: FoundDate[] = [], add = (d: string | null, m: RegExpMatchArray) => { if (d) out.push({ iso: d, index: m.index ?? 0, raw: m[0] }); };
+ for (const m of text.matchAll(/(?<![\d.])(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4}|\d{2})(?![\d])/g)) add(iso(year(m[3]!), Number(m[2]), Number(m[1])), m);
+ for (const m of text.matchAll(/(?<!\d)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)/g)) add(iso(Number(m[1]), Number(m[2]), Number(m[3])), m);
+ for (const m of text.matchAll(/(?<![\d])(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)/g)) {
+  const a = Number(m[1]), b = Number(m[2]), y = Number(m[3]);
+  if (a <= 12 && b <= 12 && a !== b) continue; // ambiguous DD/MM vs MM/DD
+  add(a > 12 ? iso(y, b, a) : b > 12 ? iso(y, a, b) : iso(y, b, a), m);
+ }
+ const mon = '([A-Za-zÄÖÜäöüß]{3,9})\\.?';
+ for (const m of text.matchAll(new RegExp(`(?<!\\d)(\\d{1,2})(?:st|nd|rd|th)?\\.?\\s+(?:of\\s+)?${mon},?\\s+(\\d{4})(?!\\d)`, 'gi'))) add(iso(Number(m[3]), MONTHS[m[2]!.toLowerCase()] ?? 0, Number(m[1])), m);
+ for (const m of text.matchAll(new RegExp(`${mon}\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})(?!\\d)`, 'gi'))) add(iso(Number(m[3]), MONTHS[m[1]!.toLowerCase()] ?? 0, Number(m[2])), m);
+ return out.sort((x, y) => x.index - y.index);
+}
 /**
  * Every calendar date the text states, as ISO strings. Handles DD.MM.YYYY / D.M.YY, YYYY-MM-DD, "3. Oktober 2026",
  * "3 Oct 2026", "October 3, 2026" and slash/dash numerics. Slash/dash dates whose day and month are both <= 12 and differ
  * (03/10/2026) are ambiguous between DE and US order and are therefore NOT accepted.
  */
-export function datesInText(text: string): Set<string> {
- const out = new Set<string>(), add = (d: string | null) => { if (d) out.add(d); };
- for (const m of text.matchAll(/(?<![\d.])(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4}|\d{2})(?![\d])/g)) add(iso(year(m[3]!), Number(m[2]), Number(m[1])));
- for (const m of text.matchAll(/(?<!\d)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)/g)) add(iso(Number(m[1]), Number(m[2]), Number(m[3])));
- for (const m of text.matchAll(/(?<![\d])(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)/g)) {
-  const a = Number(m[1]), b = Number(m[2]), y = Number(m[3]);
-  if (a <= 12 && b <= 12 && a !== b) continue; // ambiguous DD/MM vs MM/DD
-  add(a > 12 ? iso(y, b, a) : b > 12 ? iso(y, a, b) : iso(y, b, a));
+export function datesInText(text: string): Set<string> { return new Set(scanDates(text).map(d => d.iso)); }
+const LABELS_STRONG = /(?<![\p{L}\p{N}])(?:Rechnungs-?datum|Rechnung\s+vom|Invoice\s+date|Date\s+of\s+(?:invoice|issue)|Issue\s+date|Issued\s+on|Ausstellungsdatum|Ausgestellt\s+am|Datum\s+der\s+(?:Rechnung|Ausstellung)|Belegdatum|Vertragsdatum|Vertrag\s+vom|Abschlussdatum)(?![\p{L}\p{N}])/giu;
+const LABELS_GENERIC = /(?<![\p{L}\p{N}])(?<!(?:Fälligkeit|Zahlung|Lieferung?|Leistung|Geburt|Ablauf|Druck|Due|Delivery|Payment|Print|Birth|Expiry|Valid|Gültig)s?[\s-]*)(?:Datum|Date)(?![\p{L}\p{N}])/giu;
+/**
+ * The date a document labels as its own (Rechnungsdatum, Invoice date, Datum, ...), in an unambiguous format with a 4-digit year,
+ * found without any model. Several different dates under the most specific label that matches => ambiguous => null.
+ */
+export function labelledDate(text: string): string | null {
+ text = text.normalize('NFC');
+ const dates = scanDates(text);
+ for (const re of [LABELS_STRONG, LABELS_GENERIC]) {
+  const found = new Set<string>();
+  for (const m of text.matchAll(re)) {
+   const end = (m.index ?? 0) + m[0].length;
+   const d = dates.find(x => x.index >= end && x.index - end <= 14 && /^[\s:.\-–—]*$/.test(text.slice(end, x.index)) && /\d{4}/.test(x.raw));
+   if (d) found.add(d.iso);
+  }
+  if (found.size === 1) return [...found][0]!;
+  if (found.size > 1) return null;
  }
- const mon = '([A-Za-zÄÖÜäöüß]{3,9})\\.?';
- for (const m of text.matchAll(new RegExp(`(?<!\\d)(\\d{1,2})(?:st|nd|rd|th)?\\.?\\s+(?:of\\s+)?${mon},?\\s+(\\d{4})(?!\\d)`, 'gi'))) add(iso(Number(m[3]), MONTHS[m[2]!.toLowerCase()] ?? 0, Number(m[1])));
- for (const m of text.matchAll(new RegExp(`${mon}\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})(?!\\d)`, 'gi'))) add(iso(Number(m[3]), MONTHS[m[1]!.toLowerCase()] ?? 0, Number(m[2])));
- return out;
+ return null;
 }
 /** The model-suggested date counts only if the extracted text itself states that date. */
 export function validatedDate(candidate: string | null, text: string): string | null {
@@ -39,17 +64,49 @@ export function validatedDate(candidate: string | null, text: string): string | 
 }
 const collapse = (s: string) => s.normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
 const LEGAL = /[\s,.-]+(?:gmbh(?:\s*&\s*co\.?\s*kg)?|gesmbh|ag|kg|og|e\.u\.|se|ltd\.?|llc|inc\.?|corp\.?|plc|sàrl|sarl|bv|nv)\.?$/i;
-/** The model-suggested sender counts only if the text contains it verbatim (case-insensitive, word-bounded). Returns a filename-safe label. */
-export function validatedSender(candidate: string | null, text: string): string | null {
- if (!candidate) return null;
- const raw = candidate.normalize('NFC').trim();
- if (raw.length < 2 || raw.length > 80 || !/^[\p{L}\p{N}][\p{L}\p{N} .,&'\-]*$/u.test(raw)) return null;
- const hay = collapse(text), needle = collapse(raw).replace(/[.\\^$*+?()[\]{}|]/g, m => `\\${m}`);
- if (!new RegExp(`(?<![\\p{L}\\p{N}])${needle}(?![\\p{L}\\p{N}])`, 'u').test(hay)) return null;
- let label = raw;
+const esc = (s: string) => s.replace(/[.\\^$*+?()[\]{}|]/g, m => `\\${m}`);
+const wordIn = (needle: string, hay: string) => new RegExp(`(?<![\\p{L}\\p{N}])${esc(collapse(needle))}(?![\\p{L}\\p{N}])`, 'u').test(hay);
+/** Filename-safe sender label: legal forms removed, spaces to hyphens, at most 40 characters. */
+export function senderLabel(raw: string): string | null {
+ let label = raw.normalize('NFC').trim();
  for (let i = 0; i < 2; i++) { const shorter = label.replace(LEGAL, ''); if (shorter.length >= 2) label = shorter; }
  label = label.replace(/[^\p{L}\p{N} -]/gu, '').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40).replace(/-$/, '');
  return label.length >= 2 ? label : null;
+}
+const SHORT_SENDER_WINDOW = 1500;
+/**
+ * Canonical names of configured known senders (Drei, A1, Wien Energie, ...) that the text mentions as a whole word under any of
+ * their spellings. Names shorter than 3 characters (A1) only count in the first 1500 characters (letterhead), where "A1" is a
+ * company and not a paper size.
+ */
+export function knownSenderMatches(text: string, config: Pick<Config, 'knownSenders'>): Set<string> {
+ const hay = collapse(text), out = new Set<string>();
+ for (const k of config.knownSenders) {
+  for (const spelling of [k.name, ...k.aliases]) {
+   if (wordIn(spelling, spelling.length < 3 ? hay.slice(0, SHORT_SENDER_WINDOW) : hay)) { out.add(k.name); break; }
+  }
+ }
+ return out;
+}
+/** A known sender found without any model: exactly one distinct configured sender in the text, else null (several => ambiguous). */
+export function knownSenderIn(text: string, config: Pick<Config, 'knownSenders'>): string | null {
+ const m = knownSenderMatches(text, config);
+ return m.size === 1 ? senderLabel([...m][0]!) : null;
+}
+/**
+ * A suggested sender counts only if (a) the text contains it as a whole word (case-insensitive), and (b) it has at least 3
+ * characters or is a configured known sender; or it is the canonical name of a known sender whose spelling appears in the text.
+ * Returns a filename-safe label.
+ */
+export function validatedSender(candidate: string | null, text: string, config: Pick<Config, 'knownSenders'> = { knownSenders: [] }): string | null {
+ if (!candidate) return null;
+ const raw = candidate.normalize('NFC').trim();
+ if (raw.length < 2 || raw.length > 80 || !/^[\p{L}\p{N}][\p{L}\p{N} .,&'\-]*$/u.test(raw)) return null;
+ const key = collapse(raw), known = config.knownSenders.find(k => [k.name, ...k.aliases].some(x => collapse(x) === key));
+ if (known && knownSenderMatches(text, config).has(known.name)) return senderLabel(known.name);
+ if (raw.length < 3 && !known) return null;
+ if (!wordIn(raw, collapse(text))) return null;
+ return senderLabel(raw);
 }
 const EXT = /^\.[A-Za-z0-9]{1,10}$/;
 export function splitName(filename: string): { stem: string; ext: string } {
@@ -60,27 +117,30 @@ export function splitName(filename: string): { stem: string; ext: string } {
 /** NFC, no separators/control chars, no leading dots, length-capped. */
 export function sanitizeStem(input: string, max = 120): string {
  const s = [...input.normalize('NFC')].filter(c => { const n = c.codePointAt(0)!; return n >= 0x20 && n !== 0x7f; }).join('').replace(/[/\\:~]/g, '-').replace(/\s+/g, ' ').trim().replace(/^[.\s-]+/, '');
- return (s.length > max ? s.slice(0, max).trimEnd() : s) || 'Dokument';
+ const cps = [...s]; // cut on code points: slicing UTF-16 units can leave a lone surrogate (written to disk as U+FFFD)
+ return (cps.length > max ? cps.slice(0, max).join('').trimEnd() : s) || 'Dokument';
 }
 export interface NameInput { filename: string; text: string; route: Route; documentDate: string | null; sender: string | null }
 export interface NameResult { name: string; renamed: boolean; reason: string }
+/** Folders whose files may get an optional date prefix (`naming.datePrefix`): personal and admin documents. Uni/dev/invoice/contract names are never prefixed here. */
+export const DATE_PREFIX_FOLDERS = ['04_Persönlich', '02_Admin & Finanzen'];
 const datePrefixed = /^\d{4}-\d{2}-\d{2}[_ -]/;
 /**
  * Locked policy: invoices/contracts become `YYYY-MM-DD_<Sender>-<Doctype>.<ext>` only when the model's date AND sender are
  * both found in the extracted text; otherwise the original name is kept. Uni, dev and other assets always keep their names.
- * Optional `naming.datePrefix` adds a validated date prefix to 04_Persönlich documents only. The extension is always the original one.
+ * Optional `naming.datePrefix` adds a validated date prefix to 04_Persönlich and 02_Admin & Finanzen (admin route) documents only. The extension is always the original one.
  */
 export function targetName(input: NameInput, config: Config): NameResult {
  const keep = (reason: string): NameResult => ({ name: input.filename, renamed: false, reason });
  const { stem, ext } = splitName(input.filename);
  if (ext && !EXT.test(ext)) return keep('naming_unsafe_extension');
- const personal = config.naming.datePrefix && input.route.folder === '04_Persönlich';
+ const personal = config.naming.datePrefix && DATE_PREFIX_FOLDERS.includes(input.route.folder);
  if (!input.route.rename && !personal) return keep('naming_not_applicable');
  const date = validatedDate(input.documentDate, input.text);
  if (!date) return keep('naming_date_unverified');
  let name: string;
  if (input.route.rename) {
-  const sender = validatedSender(input.sender, input.text);
+  const sender = validatedSender(input.sender, input.text, config);
   if (!sender || !input.route.docType) return keep('naming_sender_unverified');
   name = `${date}_${sender}-${input.route.docType}${ext}`;
  } else {
@@ -90,4 +150,8 @@ export function targetName(input: NameInput, config: Config): NameResult {
  name = name.normalize('NFC');
  if (!safeName(name) || Buffer.byteLength(name) > 200 || extname(name) !== ext) return keep('naming_unsafe_result');
  return { name, renamed: name !== input.filename, reason: 'naming_validated' };
+}
+/** Deterministic naming inputs found in the text itself (no model): the document's labelled date and a configured known sender. */
+export function extractNaming(text: string, route: Route, config: Config): { date: string | null; sender: string | null } {
+ return { date: labelledDate(text), sender: route.rename ? knownSenderIn(text, config) : null };
 }

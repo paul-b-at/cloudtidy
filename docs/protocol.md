@@ -10,6 +10,8 @@ v2 replaces v1's `suggestedName` with explicit `documentDate` and `sender` field
 {"version":2,"filename":"bill.pdf","text":"bounded extracted text","routes":[{"id":"invoices","description":"Invoices and payment requests"}]}
 ```
 
+Optional `lockedRoute` (a route id from `routes`): a deterministic rule in Bun already chose the route, so the model is only asked for `documentDate` and `sender`. The helper then restricts the generation schema to that one route, tells the model "the route is already decided", and fails closed (exit 3) if the id is unknown or the output names any other route. Without `lockedRoute` the model picks a route (or `review`) as before.
+
 Limits: 32 KiB request, 2,400 characters of text (Bun slices on a code-point boundary, never through a surrogate pair), at most 32 routes, route IDs `^[a-z][a-z0-9_-]{0,31}$` (ASCII, checked scalar by scalar so `"uni\n"` is rejected), `review` is reserved, descriptions at most 240 characters.
 
 ## Response
@@ -41,6 +43,17 @@ Greedy sampling (repeatable for a given model version) and a 256-token response 
 
 ## Failure and exit codes
 
-On failure the helper prints nothing on stdout and writes exactly one fixed token to stderr: `classification_failed:<code>`, with `<code>` one of `context_window_exceeded`, `guardrail_violation`, `refusal`, `unsupported_language`, `assets_unavailable`, `decoding_failure`, `generation_error`, `model_unavailable`, `invalid_request`, `oversized_request`, `other`. Tokens never contain document text. Exit codes: `0` success, `2` model unavailable, `3` invalid or oversized request, `1` any other failure. Bun records every non-zero exit as a (transient) review reason and retries a bounded number of times.
+On failure the helper prints nothing on stdout and writes exactly one fixed token to stderr: `classification_failed:<code>`, with `<code>` one of `context_window_exceeded`, `guardrail_violation`, `refusal`, `unsupported_language`, `assets_unavailable`, `rate_limited`, `concurrent_requests`, `decoding_failure`, `generation_error`, `model_unavailable`, `invalid_request`, `oversized_request`, `other`. Tokens never contain document text.
+
+| Exit | Meaning | Bun treats it as |
+| --- | --- | --- |
+| `0` | success | answer |
+| `2` | model unavailable (`modelNotReady`, Apple Intelligence off, assets not downloaded) | **transient**: file stays in `_Inbox` as *pending*, retried later with backoff |
+| `4` | `rateLimited` / `concurrentRequests` | **transient** (same) |
+| timeout / killed by signal | no answer in `timeoutMs` / helper crashed | **transient** (same) |
+| `3` | invalid or oversized request, invalid output (route outside the allowed set) | non-transient: `Needs_Review` |
+| `1` | refusal, guardrail, unsupported language, context overflow after the retry, decoding failure, anything else | non-transient: `Needs_Review` |
+
+Transient failures never cause a review decision by themselves: a pending file is retried (backoff 5, 10, 20, 40, then every 60 minutes) and only moves to `_Inbox/Needs_Review` with reason `deferred_too_long:<reason>` after `model.maxDeferHours` (default 24). Only a definite "no" (refusal, guardrail, invalid output) reviews immediately. Bun retries timeouts and exit 4 a bounded number of times within one run (`classifierRetries`) before deferring.
 
 Guardrails may refuse sensitive documents or unsupported languages, and structured (guided) output cannot use the permissive guardrails mode. Such documents end in `_Inbox/Needs_Review` — the intended behaviour.
