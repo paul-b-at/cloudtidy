@@ -36,8 +36,9 @@ Commands
                                   Show the audit log (append-only JSONL in the state dir).
   undo <runId> | --last [--apply] Preview (default) or perform the undo of one run. Restores only if the destination hash
                                   still matches and the original path is free; never overwrites.
-  init [--yes]                    Preview (default) or create the missing taxonomy folders (_Inbox, the buckets, configured sub-folders).
-                                  Also creates ${INBOX}/${REVIEW}. Run it only after iCloud Drive has fully synced.
+  init [--yes]                    Preview (default) or create the missing taxonomy folders: _Inbox, _Inbox/Needs_Review, the buckets and every
+                                  configured route sub-folder (e.g. 02_Admin & Finanzen/Bank, /Steuern, /Belege). Run it once after an upgrade
+                                  that adds sub-folders, and only after iCloud Drive has fully synced.
                                   Moves never create any folder: a file whose destination folder is missing goes to review (folder_missing:<path>).
   sweep [--apply] [--yes] [--verbose]
                                   Loose top-level files in the iCloud Drive root. Preview first; --apply asks for confirmation (or --yes).
