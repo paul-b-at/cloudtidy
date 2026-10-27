@@ -95,7 +95,11 @@
     },
     {
       "name": "Allianz",
-      "aliases": [],
+      "aliases": [
+        "Allianz Versicherung",
+        "Allianz Versicherungs-AG",
+        "Allianz Elementar"
+      ],
       "commonWord": true
     }
   ],
