@@ -114,7 +114,9 @@ export function validateConfig(x: unknown): Config {
   if (!Array.isArray(patterns) || patterns.length > 16) bad('"patterns" must be a list of at most 16 regular expressions');
   for (const [j, p] of (patterns as unknown[]).entries()) {
    if (typeof p !== 'string' || !p || p.length > 400) bad(`"patterns[${j}]" must be a non-empty string of at most 400 characters`);
-   try { new RegExp(wholeWord(p as string), 'iu'); } catch (e) { bad(`"patterns[${j}]" is not a valid regular expression (${(e as Error).message.replace(/^Invalid regular expression: /, '').slice(0, 120)})`); }
+   let re: RegExp;
+   try { re = new RegExp(wholeWord(p as string), 'iu'); } catch (e) { bad(`"patterns[${j}]" is not a valid regular expression (${(e as Error).message.replace(/^Invalid regular expression: /, '').slice(0, 120)})`); }
+   if (re!.test('')) bad(`"patterns[${j}]" matches the empty string (it would match every document)`);
   }
   ids.add(v.id as string); folders.add((v.folder as string).normalize('NFC'));
   routes.push({ id: v.id as string, folder: v.folder as string, description: v.description as string, rename: v.rename as boolean, ...(v.rename ? { docType: v.docType as string } : {}), patterns: patterns as string[] });

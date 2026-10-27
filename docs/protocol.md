@@ -10,6 +10,8 @@ v2 replaces v1's `suggestedName` with explicit `documentDate` and `sender` field
 {"version":2,"filename":"bill.pdf","text":"bounded extracted text","routes":[{"id":"invoices","description":"Invoices and payment requests"}]}
 ```
 
+`routes` is the configured route list (`id` + `description`), so it contains every route, including routes without Tier-1 patterns such as the `admin` root (the model is the only way to reach it). The model must answer with one of these ids or `review`; Bun rejects any other id (`invalid_response`).
+
 Optional `lockedRoute` (a route id from `routes`): a deterministic rule in Bun already chose the route, so the model is only asked for `documentDate` and `sender`. The helper then restricts the generation schema to that one route, tells the model "the route is already decided", and fails closed (exit 3) if the id is unknown or the output names any other route. Without `lockedRoute` the model picks a route (or `review`) as before.
 
 Limits: 32 KiB request, 2,400 characters of text (Bun slices on a code-point boundary, never through a surrogate pair), at most 32 routes, route IDs `^[a-z][a-z0-9_-]{0,31}$` (ASCII, checked scalar by scalar so `"uni\n"` is rejected), `review` is reserved, descriptions at most 240 characters.

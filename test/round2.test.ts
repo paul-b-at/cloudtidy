@@ -133,10 +133,10 @@ test('init: preview creates nothing; --yes creates only missing taxonomy folders
   const layout = await resolveLayout(sb.config);
   await rm(join(sb.root, '01_Uni'), { recursive: true }); await rm(join(sb.root, '02_Admin & Finanzen'), { recursive: true });
   const before = await tree(sb.root), plan = await planInit(layout, sb.config);
-  expect(plan.steps.filter(s => s.action === 'create').map(s => s.path)).toEqual(['01_Uni', '02_Admin & Finanzen', '02_Admin & Finanzen/Rechnungen', '02_Admin & Finanzen/Verträge']);
+  expect(plan.steps.filter(s => s.action === 'create').map(s => s.path)).toEqual(['01_Uni', '02_Admin & Finanzen', '02_Admin & Finanzen/Rechnungen', '02_Admin & Finanzen/Verträge', '02_Admin & Finanzen/Bank', '02_Admin & Finanzen/Steuern', '02_Admin & Finanzen/Belege']);
   expect(await tree(sb.root)).toEqual(before);
-  const done = await applyInit(layout, sb.config); expect(done.create).toBe(4);
-  expect(await readdir(join(sb.root, '02_Admin & Finanzen'))).toEqual(['Rechnungen', 'Verträge']);
+  const done = await applyInit(layout, sb.config); expect(done.create).toBe(7);
+  expect((await readdir(join(sb.root, '02_Admin & Finanzen'))).sort()).toEqual(['Bank', 'Belege', 'Rechnungen', 'Steuern', 'Verträge']);
   expect((await planInit(layout, sb.config)).create).toBe(0); expect(taxonomy(sb.config)[0]).toBe('_Inbox');
   await rm(join(sb.root, '04_Persönlich'), { recursive: true }); await writeFile(join(sb.root, '04_Persönlich'), 'a file, not a folder');
   await expect(applyInit(layout, sb.config)).rejects.toThrow('init refused');
@@ -223,22 +223,23 @@ test('model ran but its date/sender are not in the text: route stays, original n
  const named = targetName({ filename: 'scan.txt', text: 'Rechnung zahlbar sofort', route: route('invoices'), documentDate: d.documentDate, sender: d.sender }, config);
  expect(named).toMatchObject({ name: 'scan.txt', renamed: false });
 });
-test('admin route: 02_Admin & Finanzen, keeps names, date prefix only when enabled; conflicts with other routes go to the model', async () => {
- const adm = route('admin');
- expect(adm).toMatchObject({ folder: '02_Admin & Finanzen', rename: false });
- for (const t of ['Kontoauszug Oktober', 'Ihr Steuerbescheid 2025', 'Finanzamt Wien', 'Kassenbon Billa', 'Quittung 4711', 'Receipt #3']) expect(heuristics('x.pdf', t, config)?.id, t).toBe('admin');
- for (const t of ['Belegung der Räume', 'Quittungsblock', 'Finanzamtsleiter']) expect(heuristics('x.pdf', t, config)?.id, t).not.toBe('admin');
- expect(heuristics('x.pdf', 'Kontoauszug mit Rechnung', config)).toBeNull(); // admin + invoices
+test('admin subfolders: bank / tax / receipts keep names; admin root is model-only; date prefix only when enabled; conflicts go to the model', async () => {
+ expect(route('admin')).toMatchObject({ folder: '02_Admin & Finanzen', rename: false, patterns: [] });
+ for (const [id, t] of [['bank', 'Kontoauszug Oktober'], ['tax', 'Ihr Steuerbescheid 2025'], ['tax', 'Finanzamt Wien'], ['receipts', 'Kassenbon Billa'], ['receipts', 'Quittung 4711'], ['receipts', 'Receipt #3']] as const) {
+  expect(route(id)).toMatchObject({ rename: false }); expect(heuristics('x.pdf', t, config)?.id, t).toBe(id);
+ }
+ for (const t of ['Belegung der Räume', 'Quittungsblock', 'Finanzamtsleiter']) expect(heuristics('x.pdf', t, config), t).toBeNull();
+ expect(heuristics('x.pdf', 'Kontoauszug mit Rechnung', config)).toBeNull(); // bank + invoices
  const sb = await sandbox(); try {
   await put(sb, 'kontoauszug.txt', 'Kontoauszug Oktober 2026\nDatum 31.10.2026\nWiener Städtische');
   const r = await runOnce(sb.config, { apply: true, model: failingModel });
-  expect(r.items[0]).toMatchObject({ outcome: 'moved', route: 'admin', destination: '02_Admin & Finanzen/kontoauszug.txt', renamed: false });
+  expect(r.items[0]).toMatchObject({ outcome: 'moved', route: 'bank', destination: '02_Admin & Finanzen/Bank/kontoauszug.txt', renamed: false });
   await put(sb, 'k2.txt', 'Kontoauszug Oktober 2026\nDatum 31.10.2026\nWiener Städtische');
   const on = { ...sb.config, naming: { datePrefix: true } };
   const r2 = await runOnce(on, { apply: false, model: failingModel });
-  expect(r2.items[0]).toMatchObject({ route: 'admin', destination: '02_Admin & Finanzen/2026-10-31_k2.txt', renamed: true });
+  expect(r2.items[0]).toMatchObject({ route: 'bank', destination: '02_Admin & Finanzen/Bank/2026-10-31_k2.txt', renamed: true });
  } finally { await sb.cleanup(); }
- expect(validateConfig(baseJson).routes.map(r => r.id)).toContain('admin');
+ expect(validateConfig(baseJson).routes.map(r => r.id)).toEqual(expect.arrayContaining(['bank', 'tax', 'receipts', 'admin']));
 });
 test('F-16: sender and rule words are matched as whole words (accepted risk documented: rules remain steerable by document text)', () => {
  const inv = routePatterns(route('invoices'));

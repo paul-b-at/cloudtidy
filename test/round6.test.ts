@@ -207,7 +207,7 @@ import { parseLabels, unsafeOutputs } from '../src/evaluate';
 const labelsOf = async () => JSON.parse(await rf(join(FIXTURE_DIR, 'labels.json'), 'utf8')) as Record<string, string>;
 const reviewModel = (async () => ({ version: 2, route: 'review', documentDate: '', sender: '', needsReview: true })) as never;
 
-test('G the fixtures: ~20+ synthetic documents, all 6 routes, review cases, an SVS letter, >= 4 prompt injections; labels are valid and match the files', async () => {
+test('G the fixtures: ~20+ synthetic documents, every route, review cases, an SVS letter, >= 4 prompt injections; labels are valid and match the files', async () => {
  const labels = await labelsOf(), files = (await ls(FIXTURE_DIR)).filter(f => f !== 'labels.json').sort();
  expect(files.length).toBeGreaterThanOrEqual(20); expect(Object.keys(labels).sort()).toEqual(files); parseLabels(labels, defaultConfig);
  for (const id of defaultConfig.routes.map(r => r.id)) expect(Object.values(labels), id).toContain(id);

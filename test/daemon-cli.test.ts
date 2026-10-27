@@ -128,7 +128,7 @@ test('personal Tier-1 rules: single match is definite, conflicts and unknown doc
  expect(heuristics('Arztbrief.pdf', 'Versicherung Polizze', config)).toBeNull(); // conflict with contracts -> model
  expect(heuristics('x.txt', 'Flugticket Rechnung IBAN', config)).toBeNull();
  expect(heuristics('x.txt', 'Befunde und Sozialversicherung', config)).toBeNull(); // Sozialversicherung is excluded from the contracts rule (statutory, not a contract); Befunde is not a personal word either
- expect(heuristics('x.txt', 'Steuerbescheid 2025', config)?.id).toBe('admin');
+ expect(heuristics('x.txt', 'Steuerbescheid 2025', config)?.id).toBe('tax');
  expect(heuristics('x.txt', 'Gesprächsnotiz ohne Signalwort', config)).toBeNull(); // anything else is left to the model / review
 });
 test('model text excerpt never splits a surrogate pair; the helper request stays valid UTF-8 JSON', async () => {
