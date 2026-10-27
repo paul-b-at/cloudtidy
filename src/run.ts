@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 
 import { checkModel, type ModelCall, type ModelStatus } from './classifier';
 import { type Config } from './config';
-import { applyOne, plan, plannedItem, type AnalyzeDeps, type Item, type Planned } from './engine';
+import { applyOne, plan, plannedItem, previewItem, type AnalyzeDeps, type Item, type Planned } from './engine';
 import { INBOX } from './config';
 import { type RenameOptions } from './fsx';
 import { HistoryWriteError, newRunId, reconcileIntents, type Reconciled } from './history';
@@ -34,12 +34,16 @@ export interface RunOptions {
  notify?: boolean;
  /** Clock for the pending/backoff/grace logic (tests). */
  now?: () => number;
+ /** Monotonic clock in ms for the run time budget (tests). */
+ clock?: () => number;
 }
 export interface RunReport {
  runId: string; mode: 'dry-run' | 'apply'; context: 'launchd' | 'interactive'; items: Item[]; skipped: Skipped[];
  counts: Record<string, number>; model: ModelStatus | null; locked: boolean; aborted: boolean; inboxReadable: boolean;
  /** Journal entries recovered/aborted after a crash between intent and commit (apply runs only). */
  recovered: Reconciled;
+ /** Set only when the time budget (`maxRunSeconds`) ran out: files not started are left untouched for the next run. */
+ budget: { seconds: number; elapsedSeconds: number; left: number } | null;
 }
 export const isDaemonContext = (o?: { daemon?: boolean }) => !!o?.daemon || process.env.CLOUDTIDY_CONTEXT === 'launchd';
 export const resolveApply = (o: Pick<RunOptions, 'apply' | 'daemon'>, config: Config) => o.apply || (isDaemonContext(o) && config.daemon.apply);
@@ -52,13 +56,14 @@ const pendingItem = (name: string, e: Pick<PendingEntry, 'reason' | 'detail'>): 
 /** One pass over `_Inbox` (or, for sweep, loose files in the iCloud root). */
 export async function runOnce(config: Config, o: RunOptions): Promise<RunReport> {
  const kind = o.kind ?? 'inbox', apply = resolveApply(o, config) && !o.readOnly;
- const report: RunReport = { runId: newRunId(), mode: apply ? 'apply' : 'dry-run', context: process.env.CLOUDTIDY_CONTEXT === 'launchd' || o.daemon ? 'launchd' : 'interactive', items: [], skipped: [], counts: {}, model: null, locked: false, aborted: false, inboxReadable: true, recovered: { recovered: 0, aborted: 0 } };
+ const report: RunReport = { runId: newRunId(), mode: apply ? 'apply' : 'dry-run', context: process.env.CLOUDTIDY_CONTEXT === 'launchd' || o.daemon ? 'launchd' : 'interactive', items: [], skipped: [], counts: {}, model: null, locked: false, aborted: false, inboxReadable: true, recovered: { recovered: 0, aborted: 0 }, budget: null };
  const files = stateFiles(config), layout = await resolveLayout(config);
  if (apply) await assertApplyAllowed(layout, config); // never move files outside iCloud Drive unless the config says so explicitly
  if (!o.readOnly) await rotateLogs(config.logDir); // launchd stdout/stderr files: 5 MB x 3
  const lock = o.readOnly ? null : (await ensureStateDir(config), await acquireLock(files.lock, { waitMs: config.lockWaitMs }));
  if (!o.readOnly && !lock) { report.locked = true; log('another cloudtidy process holds the lock; skipping this trigger'); return report; }
  let pending: PendingStore | null = null, held: HeldStore | null = null;
+ const clock = o.clock ?? (() => performance.now()), t0 = clock(); // the run time budget starts once the lock is held
  try {
   try { await access(layout.inbox, constants.R_OK); await readdir(layout.inbox); } catch { report.inboxReadable = false; }
   if (!o.readOnly) report.model = await checkModel(config);
@@ -86,18 +91,19 @@ export async function runOnce(config: Config, o: RunOptions): Promise<RunReport>
   const cache = o.useCache === false || o.readOnly ? null : await DecisionCache.load(files.cache, await configFingerprint(config));
   held = await HeldStore.load(files.held);
   if (!o.readOnly) await held.save().catch(() => {}); // persists the cleanup when invalid entries were dropped (no-op otherwise)
-  const { planned } = await plan(ready, config, { cache, held: o.useCache === false ? null : held, extract: o.extract, model: o.model, sleep: o.sleep, pending, modelAvailable: !!report.model?.available, apply });
+  const { planned, left } = await plan(ready, config, { cache, held: o.useCache === false ? null : held, extract: o.extract, model: o.model, sleep: o.sleep, pending, modelAvailable: !!report.model?.available, apply, budget: { ms: config.maxRunSeconds * 1000, elapsed: () => clock() - t0 } });
+  if (left) report.budget = { seconds: config.maxRunSeconds, elapsedSeconds: Math.round((clock() - t0) / 1000), left };
   await cache?.save();
   if (o.useCache === false && apply) { for (const p of planned) held.release(p.sha256, p.name); await held.save(); } // --no-cache --apply releases undo holds for the files it re-examines (a preview must not)
   // Sweep sources are loose files in the iCloud root, not in _Inbox: a file that stays put must not claim an _Inbox destination.
   const stays = (i: Item): Item => kind === 'root' && i.destination === `${INBOX}/${i.file}` ? { ...i, destination: i.file } : i;
-  const preview = [...planned.map(plannedItem), ...pendItems].map(stays);
+  const preview = [...(await Promise.all(planned.map(p => previewItem(layout, config, p)))), ...pendItems].map(stays); // shows the same review (folder_missing:<path>) that --apply would produce
   if (o.confirm && !(await o.confirm(preview))) { report.items = preview; report.aborted = true; report.counts = tally(preview, report.skipped); return report; }
   if (!apply) report.items = preview;
   else {
    const ctx = { layout, config, kind, runId: report.runId, mode: o.mode ?? 'run', historyFile: files.history, rename: o.rename, deviceOf: o.deviceOf };
    for (const p of planned as Planned[]) {
-    try { const item = await applyOne(ctx, p); report.items.push(item); if (item.outcome === 'error') log(`error: ${item.file}: ${item.detail ?? item.reason}`); }
+    try { const item = await applyOne(ctx, p); report.items.push(item); if (item.outcome === 'moved' || item.outcome === 'review' || item.outcome === 'duplicate') pending.clear(p.name); /* the file left _Inbox: its pending entry goes in the same run */ if (item.outcome === 'error') log(`error: ${item.file}: ${item.detail ?? item.reason}`); }
     catch (e) {
      report.items.push({ ...plannedItem(p), outcome: 'error', detail: 'history_or_io_error' });
      if (e instanceof HistoryWriteError) { log(`aborting run: ${e.message}`); break; } // history not writable: stop moving
