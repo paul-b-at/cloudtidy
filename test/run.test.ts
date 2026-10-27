@@ -8,7 +8,7 @@ import { stateFiles } from '../src/state';
 import { resolveLayout } from '../src/paths';
 import { acquireLock } from '../src/lock';
 import { HelperError } from '../src/process';
-import { failingModel, model, sandbox, swapForSymlink, tree, type Sandbox } from './helpers';
+import { failingModel, model, sandbox, swapForSymlink, tree, type Sandbox, inboxFiles } from './helpers';
 
 const exists = (p: string) => stat(p).then(() => true, () => false);
 const UNI = 'VO 123.456 Machine Learning exercise sheet';
@@ -21,7 +21,7 @@ test('apply: rule match moves into the bucket and journals it', async () => {
   const r = await apply(sb);
   expect(r.mode).toBe('apply'); expect(r.counts.moved).toBe(1);
   expect(await readFile(join(sb.root, '01_Uni', 'sheet.txt'), 'utf8')).toBe(UNI);
-  expect(await readdir(sb.inbox)).toEqual([]);
+  expect(await inboxFiles(sb)).toEqual([]);
   const h = await readHistory(stateFiles(sb.config).history);
   expect(h).toHaveLength(1);
   expect(h[0]).toMatchObject({ type: 'move', runId: r.runId, outcome: 'moved', route: 'uni', tier: 'rule', source: join(sb.inbox, 'sheet.txt'), destination: join(sb.root, '01_Uni', 'sheet.txt'), size: UNI.length, renamed: false });
@@ -37,7 +37,7 @@ test('dry-run never mutates the iCloud tree (also for review items); scan --dry-
   expect(r.mode).toBe('dry-run');
   expect(r.items.map(i => `${i.file}:${i.action}:${i.destination}`)).toEqual(['mystery.txt:review:_Inbox/Needs_Review/mystery.txt', 'sheet.txt:move:01_Uni/sheet.txt']);
   expect(await tree(sb.root)).toEqual(before);
-  expect(await exists(sb.review)).toBe(false);
+  expect(await readdir(sb.review)).toEqual([]);
   expect(await readHistory(stateFiles(sb.config).history)).toEqual([]);
   const ro = await runOnce({ ...sb.config, stateDir: join(sb.dir, 'never') }, { apply: false, readOnly: true, model: model() });
   expect(ro.items).toHaveLength(2); expect(await tree(sb.root)).toEqual(before); expect(await exists(join(sb.dir, 'never'))).toBe(false);
@@ -47,7 +47,7 @@ test('daemon apply gate: --daemon moves only when daemon.apply is true', async (
  const sb = await sandbox(); try {
   await put(sb, 'sheet.txt', UNI);
   const off = await runOnce(sb.config, { apply: false, daemon: true, model: model() });
-  expect(off.mode).toBe('dry-run'); expect(await readdir(sb.inbox)).toEqual(['sheet.txt']);
+  expect(off.mode).toBe('dry-run'); expect(await inboxFiles(sb)).toEqual(['sheet.txt']);
   process.env.CLOUDTIDY_CONTEXT = 'launchd';
   try { expect((await runOnce(sb.config, { apply: false, model: model() })).mode).toBe('dry-run'); } finally { delete process.env.CLOUDTIDY_CONTEXT; }
   const on = await runOnce({ ...sb.config, daemon: { ...sb.config.daemon, apply: true } }, { apply: false, daemon: true, model: model() });
@@ -78,9 +78,9 @@ test('model output can never change the extension, even with a valid route', asy
  const sb = await sandbox(); try {
   await put(sb, 'bill.txt', 'Drei Rechnung 03.10.2026');
   const r = await runOnce(sb.config, { apply: true, model: model({ route: 'invoices', documentDate: '2026-10-03', sender: 'Drei', suggestedName: '2026-10-03_Drei.sh' }) });
-  // smuggled field => the whole response is rejected (a definite "invalid" answer): the file goes to review with its ORIGINAL name
-  expect(r.items[0]).toMatchObject({ outcome: 'review', reason: 'invalid_response' });
-  expect(await readdir(sb.review)).toEqual(['bill.txt']); expect(await readdir(join(sb.root, '02_Admin & Finanzen'))).toEqual([]);
+  // smuggled field => the whole response is rejected (a definite "invalid" answer): the rule's route stays (rule hits are final) and the file keeps its ORIGINAL name
+  expect(r.items[0]).toMatchObject({ outcome: 'moved', route: 'invoices', renamed: false, reason: 'rule_match', detail: 'naming_invalid_response' });
+  expect(await readdir(sb.review).catch(() => [])).toEqual([]); expect(await readdir(join(sb.root, '02_Admin & Finanzen', 'Rechnungen'))).toEqual(['bill.txt']);
  } finally { await sb.cleanup(); }
 });
 test('invoice: deterministic date+sender need no model; for missing fields only validated model values are used', async () => {
@@ -109,7 +109,7 @@ test('conflicting rules go to the model; a rule hit is final; model failures: de
   expect(r.items.find(i => i.file === 'contract.txt')).toMatchObject({ action: 'move', route: 'contracts', tier: 'rule', destination: '02_Admin & Finanzen/Verträge/contract.txt' });
   expect(locks.at(-1)).toBe('contracts');
   const down = await runOnce(sb.config, { apply: false, model: failingModel, useCache: false });
-  expect(down.items.find(i => i.file === 'contract.txt')).toMatchObject({ action: 'review', reason: 'model_failed' }); // definite failure
+  expect(down.items.find(i => i.file === 'contract.txt')).toMatchObject({ action: 'move', route: 'contracts', renamed: false, reason: 'rule_match', detail: 'naming_model_failed' }); // definite failure: the rule route stays, the name is kept, the reason is shown
   expect(down.items.find(i => i.file === 'conflict.txt')).toMatchObject({ action: 'review', reason: 'model_failed' });
   const busy = await runOnce(sb.config, { apply: false, model: async () => { throw new HelperError('helper_unavailable'); }, useCache: false });
   expect(busy.items.find(i => i.file === 'conflict.txt')).toMatchObject({ action: 'defer', outcome: 'pending', reason: 'model_unavailable' }); // transient: stays in _Inbox
@@ -153,7 +153,7 @@ test('duplicate of an existing destination file goes to review; nothing is delet
   await mkdir(join(sb.root, '01_Uni'), { recursive: true }); await writeFile(join(sb.root, '01_Uni', 'sheet.txt'), UNI);
   await put(sb, 'sheet.txt', UNI);
   const r = await apply(sb);
-  expect(r.items[0]).toMatchObject({ outcome: 'duplicate', reason: 'duplicate_of_existing' });
+  expect(r.items[0]).toMatchObject({ outcome: 'duplicate', reason: 'duplicate_of_existing:01_Uni/sheet.txt', detail: 'same content as 01_Uni/sheet.txt' });
   expect(await readFile(join(sb.review, 'sheet.txt'), 'utf8')).toBe(UNI);
   expect(await readFile(join(sb.root, '01_Uni', 'sheet.txt'), 'utf8')).toBe(UNI);
   expect((await readHistory(stateFiles(sb.config).history))[0]).toMatchObject({ outcome: 'duplicate' });
@@ -189,7 +189,7 @@ test('lock contention: a second run does nothing while the first holds the lock'
   await put(sb, 'sheet.txt', UNI);
   const held = await acquireLock(stateFiles(sb.config).lock, { waitMs: 0 });
   const r = await apply(sb);
-  expect(r.locked).toBe(true); expect(await readdir(sb.inbox)).toEqual(['sheet.txt']);
+  expect(r.locked).toBe(true); expect(await inboxFiles(sb)).toEqual(['sheet.txt']);
   await held!.release();
   expect((await apply(sb)).counts.moved).toBe(1);
  } finally { await sb.cleanup(); }
