@@ -13,7 +13,7 @@ import { log, rotateLogs } from './log';
 import { notify } from './notify';
 import { PendingStore, type PendingEntry } from './pending';
 import { assertApplyAllowed, resolveLayout, type SourceKind } from './paths';
-import { configFingerprint, DecisionCache, ensureStateDir, HeldStore, stateFiles, writeStatus, type Status } from './state';
+import { configFingerprint, DecisionCache, ensureStateDir, HeldStore, readStatus, stateFiles, writeStatus, type Status } from './state';
 
 export interface RunOptions {
  apply: boolean;
@@ -97,7 +97,7 @@ export async function runOnce(config: Config, o: RunOptions): Promise<RunReport>
   if (o.useCache === false && apply) { for (const p of planned) held.release(p.sha256, p.name); await held.save(); } // --no-cache --apply releases undo holds for the files it re-examines (a preview must not)
   // Sweep sources are loose files in the iCloud root, not in _Inbox: a file that stays put must not claim an _Inbox destination.
   const stays = (i: Item): Item => kind === 'root' && i.destination === `${INBOX}/${i.file}` ? { ...i, destination: i.file } : i;
-  const preview = [...(await Promise.all(planned.map(p => previewItem(layout, config, p)))), ...pendItems].map(stays); // shows the same review (folder_missing:<path>) that --apply would produce
+  const preview = [...(!apply || o.confirm ? await Promise.all(planned.map(p => previewItem(layout, config, p))) : []), ...pendItems].map(stays); // shows the same review (folder_missing:<path>) that --apply would produce
   if (o.confirm && !(await o.confirm(preview))) { report.items = preview; report.aborted = true; report.counts = tally(preview, report.skipped); return report; }
   if (!apply) report.items = preview;
   else {
@@ -118,7 +118,7 @@ export async function runOnce(config: Config, o: RunOptions): Promise<RunReport>
  } finally {
   if (!o.readOnly) {
    await pending?.save().catch(() => {});
-   const s: Status = { v: 1, time: new Date().toISOString(), context: report.context, mode: report.mode, runId: report.runId, model: report.model, inboxReadable: report.inboxReadable, counts: report.counts };
+   const s: Status = { v: 1, time: new Date().toISOString(), context: report.context, mode: report.mode, runId: report.runId, model: report.model, inboxReadable: report.inboxReadable, counts: report.counts, budget: { hit: !!report.budget, left: report.budget?.left ?? 0, streak: report.budget ? (((await readStatus(config).catch(() => null))?.budget?.streak ?? 0) + 1) : 0 } };
    if (o.mode !== 'sweep') await writeStatus(config, s).catch(() => {});
    if (apply && o.notify !== false && config.daemon.notify) await notify(report.items);
   }

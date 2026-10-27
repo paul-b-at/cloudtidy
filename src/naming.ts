@@ -1,5 +1,5 @@
 import { extname } from 'node:path';
-import { safeName, type Config, type Route } from './config';
+import { safeName, type Config, type KnownSender, type Route } from './config';
 
 const MONTHS: Record<string, number> = {
  jan: 1, januar: 1, jänner: 1, january: 1, feb: 2, februar: 2, february: 2, mar: 3, mär: 3, märz: 3, maerz: 3, march: 3, apr: 4, april: 4, mai: 5, may: 5,
@@ -77,19 +77,47 @@ export function senderLabel(raw: string): string | null {
  return label.length >= 2 ? label : null;
 }
 const SHORT_SENDER_WINDOW = 1500;
+/** A company form or country right after the name: "Drei Austria", "VERBUND AG", "Allianz SE". */
+const COMPANY_SUFFIX = /^[\s,.-]*(?:austria|österreich|gmbh|gesmbh|ag|kg|og|se|e\.u\.|ltd|llc|inc|corp|plc)(?![\p{L}\p{N}])/iu;
+const spellingRe = (v: string) => new RegExp(`(?<![\\p{L}\\p{N}])${esc(v)}(?![\\p{L}\\p{N}])`, 'gu');
+/** The configured spelling or its ALL-CAPS form (invoices often print the letterhead in capitals): never any other case ("drei" in a sentence is a number). */
+const spellings = (k: KnownSender) => [k.name, ...k.aliases].map(sp => ({ sp: sp.normalize('NFC'), alias: sp !== k.name }));
 /**
- * Canonical names of configured known senders (Drei, A1, Wien Energie, ...) that the text mentions as a whole word under any of
- * their spellings. Names shorter than 3 characters (A1) only count in the first 1500 characters (letterhead), where "A1" is a
- * company and not a paper size.
+ * Canonical names of configured known senders (Drei, A1, Wien Energie, ...) that the text mentions as a whole word in the configured
+ * spelling (or an alias, or the same in capitals). Case matters: "Kaution drei Monatsmieten" is not Drei.
+ * - Names shorter than 3 characters (A1) only count in the first 1500 characters (letterhead), where "A1" is a company and not a paper size.
+ * - Ordinary words (`commonWord`: Drei, Magenta, Verbund, Allianz, ...) only count in that letterhead window, or when a company suffix follows ("Drei Austria", "VERBUND AG"). Aliases are specific names and always count.
  */
 export function knownSenderMatches(text: string, config: Pick<Config, 'knownSenders'>): Set<string> {
- const hay = collapse(text), out = new Set<string>();
+ const hay = text.normalize('NFC').replace(/\s+/g, ' '), out = new Set<string>();
  for (const k of config.knownSenders) {
-  for (const spelling of [k.name, ...k.aliases]) {
-   if (wordIn(spelling, spelling.length < 3 ? hay.slice(0, SHORT_SENDER_WINDOW) : hay)) { out.add(k.name); break; }
+  found: for (const { sp, alias } of spellings(k)) {
+   for (const v of new Set([sp, sp.toUpperCase()])) {
+    for (const m of hay.matchAll(spellingRe(v))) {
+     const inWindow = m.index! < SHORT_SENDER_WINDOW, common = !!k.commonWord && !alias;
+     if (common ? inWindow || COMPANY_SUFFIX.test(hay.slice(m.index! + v.length, m.index! + v.length + 24)) : sp.length < 3 ? inWindow : true) { out.add(k.name); break found; }
+    }
+   }
   }
  }
  return out;
+}
+const LABELLED_SENDER = /^[ \t]*(?:Absender|Rechnungssteller|Sender|From)[ \t]*[:：][ \t]*(.{2,80}?)[ \t]*$/imu;
+/** A sender the document states itself: an `Absender:`/`From:` line, else (only to settle a known-sender hit) a letterhead line that ends in a company form. Validated like any model suggestion. */
+function statedSender(text: string, config: Pick<Config, 'knownSenders'>, letterhead: boolean): string | null {
+ const resolve = (c: string): string | null => {
+  const k = config.knownSenders.find(k => knownSenderMatches(c, { knownSenders: [k] }).size > 0);
+  if (k) return k.name;
+  return validatedSender(c, text, config) ? c : null;
+ };
+ const labelled = LABELLED_SENDER.exec(text)?.[1];
+ const l = labelled ? resolve(labelled) : null;
+ if (l) return l;
+ if (!letterhead) return null;
+ for (const line of text.split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 8)) {
+  if (line.length <= 80 && LEGAL.test(line) && /^[\p{L}\p{N}][\p{L}\p{N} .,&'\-]*$/u.test(line)) { const r = resolve(line); if (r) return r; }
+ }
+ return null;
 }
 /** A known sender found without any model: the canonical configured name when exactly one distinct sender is in the text, else null (several => ambiguous). */
 export function knownSenderIn(text: string, config: Pick<Config, 'knownSenders'>): string | null {
@@ -111,7 +139,7 @@ export function validatedSender(candidate: string | null, text: string, config: 
  const raw = candidate.normalize('NFC').trim();
  if (raw.length < 2 || raw.length > 80 || !/^[\p{L}\p{N}][\p{L}\p{N} .,&'\-]*$/u.test(raw)) return null;
  const key = collapse(raw), known = config.knownSenders.find(k => [k.name, ...k.aliases].some(x => collapse(x) === key));
- if (known && knownSenderMatches(text, config).has(known.name)) return senderLabel(known.name);
+ if (known) return knownSenderMatches(text, config).has(known.name) ? senderLabel(known.name) : null; // a known name only counts where knownSenderMatches accepts it ("im Verbund" is not VERBUND): never via the generic whole-word check below
  if (raw.length < 3 && !known) return null;
  if (!known && onlyStopwords(raw)) return null; // `Die`, `Der`, `Re`, `An`, `Sehr`, `Dear` ... would pass the whole-word check in any document: a prompt-injected or confused model must not pick them
  if (!wordIn(raw, collapse(text))) return null;
@@ -162,5 +190,8 @@ export function targetName(input: NameInput, config: Config): NameResult {
 }
 /** Deterministic naming inputs found in the text itself (no model): the document's labelled date and a configured known sender. */
 export function extractNaming(text: string, route: Route, config: Config): { date: string | null; sender: string | null } {
- return { date: labelledDate(text), sender: route.rename ? knownSenderIn(text, config) : null };
+ if (!route.rename) return { date: labelledDate(text), sender: null };
+ // A sender the document states itself beats a bare known-sender hit (a letterhead line with a company form settles several hits too).
+ const hits = knownSenderMatches(text, config), stated = statedSender(text, config, hits.size > 0);
+ return { date: labelledDate(text), sender: stated ?? (hits.size === 1 ? [...hits][0]! : null) };
 }

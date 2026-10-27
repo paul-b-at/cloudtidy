@@ -7,8 +7,11 @@ export const show = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f\u200b\
 export const INBOX_UNREADABLE = `${INBOX} is not readable (check the path, iCloud sync and Full Disk Access for bun).`;
 const HELD = 'held_after_undo';
 export const isHeld = (i: Item) => i.detail === HELD;
-const HELD_HINT = 'run "run --no-cache --apply" to release them';
-export const itemLines = (items: Item[]) => items.map(i => show(`${i.outcome.padEnd(9)} ${i.file}  →  ${i.destination}   [${i.tier}${i.cached ? ', cached' : ''}: ${i.reason}${i.renamed ? ', renamed' : ''}${i.detail ? `, ${i.detail}` : ''}]`));
+const HELD_HINT = 'release them with: bun src/cli.ts run --apply --no-cache';
+/** Skip reasons that are normal housekeeping (silent in the one-line no-op report); everything else is a file that can never be sorted and must not hide. */
+const BENIGN_SKIPS = new Set(['dotfile', 'icloud_placeholder', 'partial_download', 'directory']);
+const stuckSkips = (skipped: RunReport['skipped']) => { const by = new Map<string, number>(); for (const s of skipped) if (!BENIGN_SKIPS.has(s.reason)) by.set(s.reason, (by.get(s.reason) ?? 0) + 1); return { n: [...by.values()].reduce((a, b) => a + b, 0), reasons: [...by.keys()] }; };
+export const itemLines = (items: Item[]) => items.map(i => show(`${(i.outcome === 'planned' && i.action === 'review' ? 'review' : i.outcome).padEnd(9)} ${i.file}  →  ${i.destination}   [${i.tier}${i.cached ? ', cached' : ''}: ${i.reason}${i.renamed ? ', renamed' : ''}${i.detail ? `, ${i.detail}` : ''}]`));
 /** Skipped entries: nothing is listed without `--verbose`; they are only counted (folders, dotfiles, iCloud placeholders, partial downloads, ...), grouped by reason. */
 export function skippedLines(skipped: RunReport['skipped'], verbose: boolean): string[] {
  if (verbose) return skipped.map(s => show(`skipped   ${s.name}  (${s.reason})`));
@@ -25,8 +28,8 @@ export function renderReport(r: RunReport, apply: boolean, verbose = false): { o
  const model = r.model ? (r.model.available ? 'model available' : `model UNAVAILABLE: ${r.model.reason}`) : '';
  const head = `${apply ? 'APPLY' : 'DRY-RUN'} ${r.runId}`;
  const held = r.items.filter(isHeld), shown = verbose ? r.items : r.items.filter(i => !isHeld(i));
- const heldLine = `${held.length} file(s) held after an undo, left in place (${HELD_HINT})`;
- if (!verbose && !shown.length && !r.recovered.recovered && !r.recovered.aborted && !r.budget) return { out: [`${head}: nothing to sort${model ? ` (${model})` : ''}${held.length ? `; ${heldLine}` : ''}`], err: [] };
+ const stuck = stuckSkips(r.skipped), heldLine = `${held.length} file(s) held after an undo, left in place (${HELD_HINT})`;
+ if (!verbose && !shown.length && !r.recovered.recovered && !r.recovered.aborted && !r.budget) return { out: [`${head}: nothing to sort${model ? ` (${model})` : ''}${held.length ? `; ${heldLine}` : ''}${stuck.n ? `; ${stuck.n} file(s) can't be handled (${stuck.reasons.join(', ')}); --verbose lists them` : ''}`], err: [] };
  const out = [`${head}${model ? `   ${model}` : ''}`, ...itemLines(shown)];
  if (!verbose && held.length) out.push(heldLine);
  out.push(...skippedLines(r.skipped, verbose));

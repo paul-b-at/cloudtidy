@@ -12,6 +12,7 @@ export type PendingKind = 'unstable' | 'empty' | 'model';
  * `since`/`attempts` describe everything we saw (also dry-runs, for reporting). `applySince`/`applyAttempts` count only attempts made in
  * APPLY mode: they alone drive expiry to review, so a daemon that ran in dry-run for days, or a closed laptop, never expires a file.
  */
+export const BUSY_CAP = 4;
 export interface PendingEntry { kind: PendingKind; reason: string; detail?: string; sha256?: string; since: number; lastSeen: number; attempts: number; next: number; applySince?: number; applyAttempts?: number }
 /** A file is only sent to review after at least this many model attempts in apply mode (plus one final attempt in the run that decides it). */
 export const MIN_APPLY_ATTEMPTS = 3;
@@ -78,6 +79,8 @@ export class PendingStore {
   * This alone is not a verdict: plan() makes one more attempt and only a transient failure of that attempt sends the file to review.
   */
  expired(e: PendingEntry, config: Pick<Config, 'model'>) { return e.applySince !== undefined && (e.applyAttempts ?? 0) >= MIN_APPLY_ATTEMPTS && this.now() - e.applySince >= config.model.maxDeferHours * 60 * MIN; }
+ /** A file whose final calls were only ever `model_busy` is not pending forever: after BUSY_CAP x maxDeferHours since the first apply attempt a busy final call sends it to review. */
+ hardExpired(e: PendingEntry, config: Pick<Config, 'model'>) { return e.applySince !== undefined && this.now() - e.applySince >= BUSY_CAP * config.model.maxDeferHours * 60 * MIN; }
  graceElapsed(e: PendingEntry, config: Pick<Config, 'emptyGraceMinutes'>) { return this.now() - e.since >= config.emptyGraceMinutes * MIN; }
  async save() { if (this.file && this.dirty) { await writeJsonAtomic(this.file, { v: 1, entries: this.entries }); this.dirty = false; } }
 }
