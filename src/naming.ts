@@ -109,11 +109,15 @@ export function knownSenderMatches(text: string, config: Pick<Config, 'knownSend
 const PRIMARY_SENDER = /^[ \t]*(?:Absender|Rechnungssteller)[ \t]*[:：][ \t]*(.{2,120}?)[ \t]*$/imu;
 const SECONDARY_SENDER = /^[ \t]*(?:Sender|From)[ \t]*[:：][ \t]*(.{2,120}?)[ \t]*$/imu;
 /** Document words that open a title line ("Rechnung Bau GmbH", "Mietvertrag Nr. 5"): never an issuer. */
-const DOC_WORDS = new Set(`rechnung rechnungen vertrag verträge vertraege polizze polizzen gutschrift mahnung angebot bestellung bestätigung beleg quittung kassabon kontoauszug abrechnung jahresabrechnung bescheid zahlungserinnerung invoice invoices contract contracts agreement receipt statement offer order quote credit reminder policy`.split(/\s+/));
-const isDocWord = (w: string) => { const l = w.toLowerCase(); return DOC_WORDS.has(l) || /(?:vertrag|rechnung)$/.test(l); };
-const SCRIPTS = ['Latin', 'Cyrillic', 'Greek', 'Armenian', 'Hebrew', 'Arabic', 'Georgian', 'Han', 'Hiragana', 'Katakana', 'Hangul', 'Thai'].map(n => new RegExp(`\\p{Script=${n}}`, 'u'));
-/** A word that mixes scripts (a Cyrillic "Е" inside "Wien Еnergie") is a look-alike, never a sender. Umlauts and ß are Latin. */
-export const mixedScript = (s: string) => s.split(/[^\p{L}\p{M}]+/u).filter(Boolean).some(w => SCRIPTS.filter(r => r.test(w)).length > 1);
+const DOC_WORDS = new Set(`rechnung rechnungen vertrag verträge vertraege polizze polizzen gutschrift mahnung angebot beleg quittung kassabon kontoauszug abrechnung jahresabrechnung bescheid zahlungserinnerung invoice invoices contract contracts agreement receipt`.split(/\s+/));
+export const isDocWord = (w: string) => { const l = w.toLowerCase(); return DOC_WORDS.has(l) || /(?:vertrag|rechnung)$/.test(l); };
+/**
+ * Look-alike guard (allowlist): a sender may only contain Latin-script letters (Basic Latin, Latin-1 Supplement, Latin Extended-A/B: umlauts, ß, é, ...), digits, space and `& . , - '`,
+ * and must not change under NFKC (ligatures, fullwidth letters, math-bold, ... are compatibility look-alikes). Cyrillic, Greek, Cherokee, Coptic, Lisu, Armenian, ... are all refused,
+ * whether mixed into a Latin word or as a whole word.
+ */
+const SENDER_ALLOWED = /^[A-Za-z0-9\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F .,&'\-]+$/u;
+export const senderCharsOk = (s: string) => { const n = s.normalize('NFC'); return n === s.normalize('NFC') && n.normalize('NFKC') === n && SENDER_ALLOWED.test(n); };
 /**
  * A sender the document states itself: the first `Absender:` line (only if there is none, a `Sender:`/`From:` line), else (only to settle a known-sender hit)
  * a letterhead line that ends in a company form. The stated value wins as a whole ("Absender: Evil Corp, Drei Austria" is Evil Corp): a known sender counts only
@@ -121,8 +125,8 @@ export const mixedScript = (s: string) => s.split(/[^\p{L}\p{M}]+/u).filter(Bool
  */
 function statedSender(text: string, config: Pick<Config, 'knownSenders'>, letterhead: boolean): string | null {
  const resolve = (value: string): string | null => {
-  const c = value.split(/[,;|]/)[0]!.trim();
-  if (c.length < 2 || isDocWord(c.split(/[^\p{L}\p{N}]+/u)[0] ?? '') || mixedScript(c)) return null;
+  const c = value.split(/[,;|\uFF0C\u3001\u060C\u061B\/\t]|\p{Zs}{2,}/u)[0]!.trim();
+  if (c.length < 2 || isDocWord(c.split(/[^\p{L}\p{N}]+/u)[0] ?? '') || !senderCharsOk(c)) return null;
   const k = config.knownSenders.find(k => spellings(k).some(({ sp }) => [...variants(sp)].some(v => c === v || (c.startsWith(v) && !/^[\p{L}\p{N}]/u.test(c.slice(v.length))))));
   if (k) return knownSenderMatches(c, { knownSenders: [k] }).size > 0 && knownSenderMatches(text, { knownSenders: [k] }).size > 0 ? k.name : null; // known: also in the whole text, under the same rules
   return validatedSender(c, text, config) ? c : null;
@@ -154,9 +158,10 @@ const onlyStopwords = (s: string) => { const words = s.toLowerCase().split(/[^\p
 export function validatedSender(candidate: string | null, text: string, config: Pick<Config, 'knownSenders'> = { knownSenders: [] }): string | null {
  if (!candidate) return null;
  const raw = candidate.normalize('NFC').trim();
- if (raw.length < 2 || raw.length > 80 || !/^[\p{L}\p{N}][\p{L}\p{N} .,&'\-]*$/u.test(raw) || mixedScript(raw)) return null;
+ if (raw.length < 2 || raw.length > 80 || !/^[\p{L}\p{N}][\p{L}\p{N} .,&'\-]*$/u.test(raw) || !senderCharsOk(raw)) return null;
  const key = collapse(raw), known = config.knownSenders.find(k => [k.name, ...k.aliases].some(x => collapse(x) === key));
  if (known) return knownSenderMatches(text, config).has(known.name) ? senderLabel(known.name) : null; // a known name only counts where knownSenderMatches accepts it ("im Verbund" is not VERBUND): never via the generic whole-word check below
+ if (!known && isDocWord(raw.split(/[^\p{L}\p{N}]+/u)[0] ?? '')) return null; // a title ("Rechnung Bau GmbH") is never an issuer, whoever suggests it
  if (raw.length < 3 && !known) return null;
  if (!known && onlyStopwords(raw)) return null; // `Die`, `Der`, `Re`, `An`, `Sehr`, `Dear` ... would pass the whole-word check in any document: a prompt-injected or confused model must not pick them
  if (!wordIn(raw, collapse(text))) return null;
