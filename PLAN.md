@@ -1,6 +1,6 @@
 # cloudtidy — Apple Foundation Models implementation plan
 
-Updated after the safety and Notion-conformance review fixes (round 4). Source: [Notion project](https://app.notion.com/p/b7111c0ecd3d4542aacb7044e1de4e3d).
+Updated after the safety and Notion-conformance review fixes (round 6). Source: [Notion project](https://app.notion.com/p/b7111c0ecd3d4542aacb7044e1de4e3d).
 
 ## Approved direction
 
@@ -18,6 +18,7 @@ Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR ex
 
 - Build helpers with Xcode 26+, run `doctor`, `bin/classify --check`.
 - `eval` on ≥ 20 representative German/English documents with labels: accuracy, review rate, cold/warm latency (tooling implemented; numbers are not). Naming is only shown as a proposed name per file, not scored.
+- `bun run eval:fixtures` first (26 synthetic DE/EN documents incl. 5 prompt-injection ones; `unsafe outputs: 0` required), then the 20 real documents.
 - Prompt-injection text, OCR-only scans, refusals/guardrails, context overflow, offline use.
 - Model reachable from a logged-in-user LaunchAgent (`status` shows it); TCC/Full Disk Access for `bun`.
 
@@ -30,7 +31,8 @@ Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR ex
 - Append-only audit history with a write-ahead journal (fsync'd intent/commit/abort + crash reconciliation) and hash-verified `undo` (preview by default); undo holds in their own store.
 - The mover never creates ANY folder (bucket, sub-folder or `_Inbox/Needs_Review`): a missing destination → review with `folder_missing:<relative path>`; a missing `Needs_Review` → the file stays in `_Inbox` and the run reports an error. `init [--yes]` creates the full taxonomy; `doctor` checks all of it. Apply modes only run inside iCloud Drive unless `allowNonICloudRoot`.
 - Deterministic naming first (labelled issue date, known senders); the model only fills missing date/sender with the route locked, and its values are used only when found in the text (protocol v2: the model never supplies a name).
-- Transient model failures defer files in `_Inbox` as pending (backoff 5–60 min). Review only after `model.maxDeferHours` since the first **apply-mode** attempt, ≥ 3 apply-mode attempts and a final failed attempt in the current run (dry-runs never start the clock); a per-run circuit breaker limits the cost of a hung model. Real helper calls for that file in that run and the file's own extraction timeouts count as attempts; files answered by an open breaker count nothing, and an expired file bypasses the breaker for exactly one real call (no retries). Definite failures review immediately with their specific reason (`model_refusal`, `model_guardrail`, `model_unsupported_language`, `model_context_overflow`, `model_invalid_output`, …), except on a rule hit: the rule's route and the original name are kept and the naming reason is recorded.
+- Transient model failures defer files in `_Inbox` as pending (backoff 5–60 min). Review only after `model.maxDeferHours` since the first **apply-mode** attempt, ≥ 3 apply-mode attempts and a final failed attempt in the current run (dry-runs never start the clock); a per-run circuit breaker limits the cost of a hung model. Real helper calls for that file in that run and the file's own extraction timeouts count as attempts (a busy final call is an attempt but never a review); files answered by an open breaker count nothing, and an expired file bypasses the breaker for exactly one real call (no retries). Definite failures review immediately with their specific reason (`model_refusal`, `model_guardrail`, `model_unsupported_language`, `model_context_overflow`, `model_invalid_output`, …), except on a rule hit: the rule's route and the original name are kept and the naming reason is recorded.
+- Bounded runs: `maxRunSeconds` (default 300; 60–3600) is checked before each file; files not started are left untouched and reported in one line; worst-case lock hold = budget + one file's maximum (shown by `status`/`doctor`). Quiet daemon log: a run with nothing to sort is one line; skipped/held files are only counted (`--verbose` lists them). Previews show `folder_missing:<path>` reviews like `--apply`.
 - State files are validated entry by entry (`pending.json`, `held.json`, cache); a failed rollback is journaled (never an unjournaled file); logs from launchd are rotated by size (5 MB × 3).
 - `run`, `review`, `history`, `undo`, `sweep` (preview + explicit confirmation; never from the daemon).
 

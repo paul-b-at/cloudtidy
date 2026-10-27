@@ -13,6 +13,7 @@
   "emptyGraceMinutes": 10,
   "classifierRetries": 1,
   "lockWaitMs": 30000,
+  "maxRunSeconds": 300,
   "naming": {
     "datePrefix": false
   },
