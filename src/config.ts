@@ -63,61 +63,80 @@ export function safeName(x: unknown): x is string {
 }
 function intIn(x: unknown, def: number, min: number, max: number, what: string): number {
  if (x === undefined) return def;
- if (typeof x !== 'number' || !Number.isInteger(x) || x < min || x > max) throw Error(`Invalid configuration: ${what}`);
+ if (typeof x !== 'number' || !Number.isInteger(x) || x < min || x > max) throw Error(`Invalid configuration: "${what}" must be a whole number from ${min} to ${max} (found ${JSON.stringify(x)})`);
  return x;
 }
 function bool(x: unknown, def: boolean, what: string): boolean {
  if (x === undefined) return def;
- if (typeof x !== 'boolean') throw Error(`Invalid configuration: ${what}`);
+ if (typeof x !== 'boolean') throw Error(`Invalid configuration: "${what}" must be true or false (found ${JSON.stringify(x)})`);
  return x;
 }
 const SENDER_LABEL = /^[\p{L}\p{N}][\p{L}\p{N} .&'\-]{0,59}$/u;
 function parseSenders(x: unknown): KnownSender[] {
  if (x === undefined) return [];
- if (!Array.isArray(x) || x.length > 200) throw Error('Invalid configuration: knownSenders');
+ if (!Array.isArray(x) || x.length > 200) throw Error('Invalid configuration: "knownSenders" must be a list of at most 200 entries');
  return x.map(v => {
-  if (!record(v) || typeof v.name !== 'string' || !SENDER_LABEL.test(v.name) || v.name.length < 2) throw Error('Invalid configuration: knownSenders name');
+  if (!record(v) || typeof v.name !== 'string' || !SENDER_LABEL.test(v.name) || v.name.length < 2) throw Error('Invalid configuration: "knownSenders[].name" must be a 2-60 character name (letters, digits, space . & \' -) and an object with name/aliases only');
   for (const k of Object.keys(v)) if (k !== 'name' && k !== 'aliases') throw Error(`Invalid configuration: unknown knownSenders key "${k}"`);
   const aliases = v.aliases ?? [];
-  if (!Array.isArray(aliases) || aliases.length > 8 || !aliases.every(a => typeof a === 'string' && SENDER_LABEL.test(a) && a.length >= 2)) throw Error('Invalid configuration: knownSenders aliases');
+  if (!Array.isArray(aliases) || aliases.length > 8 || !aliases.every(a => typeof a === 'string' && SENDER_LABEL.test(a) && a.length >= 2)) throw Error('Invalid configuration: "knownSenders[].aliases" must be a list of at most 8 names of 2-60 characters (letters, digits, space . & \' -)');
   return { name: v.name, aliases: aliases as string[] };
  });
 }
 export function validateConfig(x: unknown): Config {
- if (!record(x) || x.version !== 1 || typeof x.root !== 'string' || !x.root || typeof x.classifier !== 'string' || !x.classifier || typeof x.ocr !== 'string' || !x.ocr || !Number.isInteger(x.timeoutMs) || Number(x.timeoutMs) < 100 || Number(x.timeoutMs) > 120000 || !Array.isArray(x.routes) || !x.routes.length || x.routes.length > 32) throw Error('Invalid configuration');
+ if (!record(x)) throw Error('Invalid configuration: the file must contain a JSON object');
+ if (x.version !== 1) throw Error(`Invalid configuration: "version" must be 1 (found ${JSON.stringify(x.version)})`);
+ for (const k of ['root', 'classifier', 'ocr'] as const) if (typeof x[k] !== 'string' || !x[k]) throw Error(`Invalid configuration: "${k}" must be a non-empty path string`);
+ if (!Number.isInteger(x.timeoutMs) || Number(x.timeoutMs) < 100 || Number(x.timeoutMs) > 120000) throw Error(`Invalid configuration: "timeoutMs" must be a whole number of milliseconds from 100 to 120000 (found ${JSON.stringify(x.timeoutMs)})`);
+ if (!Array.isArray(x.routes) || !x.routes.length || x.routes.length > 32) throw Error('Invalid configuration: "routes" must be a list of 1 to 32 routes');
  for (const k of Object.keys(x)) if (!TOP_KEYS.has(k)) throw Error(`Invalid configuration: unknown key "${k}"`);
  const ids = new Set<string>(), folders = new Set<string>(), routes: Route[] = [];
- for (const v of x.routes) {
-  if (!record(v) || typeof v.id !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(v.id) || v.id === 'review' || ids.has(v.id) || typeof v.folder !== 'string' || isAbsolute(v.folder) || !buckets.has(v.folder.split('/')[0]!) || !v.folder.split('/').every(s => safeName(s) && !s.includes('~')) || folders.has(v.folder.normalize('NFC')) || typeof v.description !== 'string' || !v.description.length || v.description.length > 240 || typeof v.rename !== 'boolean') throw Error('Invalid route');
-  if (v.rename && !RENAME_FOLDERS.includes(v.folder)) throw Error('Renaming is restricted to invoices/contracts');
-  if (v.rename && (typeof v.docType !== 'string' || !/^[\p{L}][\p{L}\p{N}-]{0,30}$/u.test(v.docType))) throw Error('Invalid route: docType required for renaming routes');
-  if (!v.rename && v.docType !== undefined) throw Error('Invalid route: docType only applies to renaming routes');
+ for (const [n, v] of x.routes.entries()) {
+  const at = `routes[${n}]${record(v) && typeof v.id === 'string' ? ` ("${v.id.slice(0, 40)}")` : ''}`, bad = (why: string): never => { throw Error(`Invalid configuration: ${at}: ${why}`); };
+  if (!record(v)) bad('must be an object');
+  if (typeof v.id !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(v.id)) bad('"id" must be 1-32 lowercase letters, digits, "_" or "-", starting with a letter');
+  if (v.id === 'review') bad('"id" must not be "review" (reserved)');
+  if (ids.has(v.id as string)) bad('"id" is used twice');
+  if (typeof v.folder !== 'string' || isAbsolute(v.folder)) bad('"folder" must be a relative path like "01_Uni"');
+  const parts = (v.folder as string).split('/');
+  if (!buckets.has(parts[0]!)) bad(`"folder" must start with one of the buckets: ${[...buckets].join(', ')}`);
+  if (!parts.every(seg => safeName(seg) && !seg.includes('~'))) bad('"folder" has an unsafe segment (separator, control character, leading dot, "~" or surrounding space)');
+  if (folders.has((v.folder as string).normalize('NFC'))) bad('"folder" is used by another route');
+  if (typeof v.description !== 'string' || !v.description.length || v.description.length > 240) bad('"description" must be 1-240 characters');
+  if (typeof v.rename !== 'boolean') bad('"rename" must be true or false');
+  if (v.rename && !RENAME_FOLDERS.includes(v.folder as string)) bad(`"rename": true is only allowed for ${RENAME_FOLDERS.join(' and ')}`);
+  if (v.rename && (typeof v.docType !== 'string' || !/^[\p{L}][\p{L}\p{N}-]{0,30}$/u.test(v.docType))) bad('"docType" (letters, digits, "-", up to 31 characters) is required when "rename" is true');
+  if (!v.rename && v.docType !== undefined) bad('"docType" only applies to routes with "rename": true');
   const patterns = v.patterns ?? [];
-  if (!Array.isArray(patterns) || patterns.length > 16) throw Error('Invalid route patterns');
-  for (const p of patterns) { if (typeof p !== 'string' || !p || p.length > 400) throw Error('Invalid route patterns'); try { new RegExp(wholeWord(p), 'iu'); } catch { throw Error('Invalid route pattern'); } }
-  ids.add(v.id); folders.add(v.folder.normalize('NFC'));
-  routes.push({ id: v.id, folder: v.folder, description: v.description, rename: v.rename, ...(v.rename ? { docType: v.docType as string } : {}), patterns: patterns as string[] });
+  if (!Array.isArray(patterns) || patterns.length > 16) bad('"patterns" must be a list of at most 16 regular expressions');
+  for (const [j, p] of (patterns as unknown[]).entries()) {
+   if (typeof p !== 'string' || !p || p.length > 400) bad(`"patterns[${j}]" must be a non-empty string of at most 400 characters`);
+   try { new RegExp(wholeWord(p as string), 'iu'); } catch (e) { bad(`"patterns[${j}]" is not a valid regular expression (${(e as Error).message.replace(/^Invalid regular expression: /, '').slice(0, 120)})`); }
+  }
+  ids.add(v.id as string); folders.add((v.folder as string).normalize('NFC'));
+  routes.push({ id: v.id as string, folder: v.folder as string, description: v.description as string, rename: v.rename as boolean, ...(v.rename ? { docType: v.docType as string } : {}), patterns: patterns as string[] });
  }
  const blocklist = x.blocklist ?? [];
- if (!Array.isArray(blocklist) || blocklist.length > 64 || !blocklist.every(safeName)) throw Error('Invalid configuration: blocklist');
+ if (!Array.isArray(blocklist) || blocklist.length > 64 || !blocklist.every(safeName)) throw Error('Invalid configuration: "blocklist" must be a list of at most 64 plain folder names');
  const naming = x.naming ?? {}, daemon = x.daemon ?? {}, model = x.model ?? {};
+ for (const [k, v] of [['naming', naming], ['daemon', daemon], ['model', model]] as const) if (!record(v)) throw Error(`Invalid configuration: "${k}" must be an object`);
  if (!record(naming) || !record(daemon) || !record(model)) throw Error('Invalid configuration');
  for (const k of Object.keys(model)) if (k !== 'maxDeferHours') throw Error(`Invalid configuration: unknown model key "${k}"`);
  const knownSenders = parseSenders(x.knownSenders);
  for (const k of Object.keys(naming)) if (k !== 'datePrefix') throw Error(`Invalid configuration: unknown naming key "${k}"`);
  for (const k of Object.keys(daemon)) if (!['apply', 'notify', 'intervalSec'].includes(k)) throw Error(`Invalid configuration: unknown daemon key "${k}"`);
  const stateDir = x.stateDir ?? '~/Library/Application Support/cloudtidy', logDir = x.logDir ?? '~/Library/Logs/cloudtidy';
- if (typeof stateDir !== 'string' || !stateDir || typeof logDir !== 'string' || !logDir) throw Error('Invalid configuration: stateDir/logDir');
+ if (typeof stateDir !== 'string' || !stateDir || typeof logDir !== 'string' || !logDir) throw Error('Invalid configuration: "stateDir" and "logDir" must be non-empty path strings');
  return {
-  version: 1, root: x.root, classifier: x.classifier, ocr: x.ocr, timeoutMs: x.timeoutMs as number, routes,
+  version: 1, root: x.root as string, classifier: x.classifier as string, ocr: x.ocr as string, timeoutMs: x.timeoutMs as number, routes,
   blocklist: blocklist as string[], stateDir, logDir,
   debounceMs: intIn(x.debounceMs, 3000, 0, 60000, 'debounceMs'),
-  stabilityRetries: intIn(x.stabilityRetries, 0, 0, 3, 'stabilityRetries'),
+  stabilityRetries: intIn(x.stabilityRetries, 2, 0, 3, 'stabilityRetries'),
   emptyGraceMinutes: intIn(x.emptyGraceMinutes, 10, 0, 1440, 'emptyGraceMinutes'),
   classifierRetries: intIn(x.classifierRetries, 1, 0, 3, 'classifierRetries'),
   lockWaitMs: intIn(x.lockWaitMs, 30000, 0, 300000, 'lockWaitMs'),
   naming: { datePrefix: bool(naming.datePrefix, false, 'naming.datePrefix') },
-  daemon: { apply: bool(daemon.apply, false, 'daemon.apply'), notify: bool(daemon.notify, true, 'daemon.notify'), intervalSec: intIn(daemon.intervalSec, 600, 60, 86400, 'daemon.intervalSec') },
+  daemon: { apply: bool(daemon.apply, false, 'daemon.apply'), notify: bool(daemon.notify, true, 'daemon.notify'), intervalSec: intIn(daemon.intervalSec, 120, 60, 86400, 'daemon.intervalSec') },
   model: { maxDeferHours: intIn(model.maxDeferHours, 24, 1, 720, 'model.maxDeferHours') },
   knownSenders, allowNonICloudRoot: bool(x.allowNonICloudRoot, false, 'allowNonICloudRoot')
  };
@@ -128,7 +147,11 @@ export function resolvePaths(c: Config): Config {
 }
 export const defaultConfigPath = resolve(repoRoot, 'config/default.config.json');
 export async function loadConfig(file = defaultConfigPath): Promise<Config> {
- return resolvePaths(validateConfig(JSON.parse(await readFile(file, 'utf8'))));
+ let text: string;
+ try { text = await readFile(file, 'utf8'); } catch (e) { throw Error(`config file ${file}: ${(e as NodeJS.ErrnoException).code === 'ENOENT' ? 'not found' : `cannot be read (${(e as NodeJS.ErrnoException).code ?? 'error'})`}`); }
+ let json: unknown;
+ try { json = JSON.parse(text); } catch (e) { throw Error(`config file ${file}: not valid JSON (${(e as Error).message.slice(0, 120)})`); }
+ try { return resolvePaths(validateConfig(json)); } catch (e) { throw Error(`config file ${file}: ${(e as Error).message}`); }
 }
 /**
  * Tier-1 patterns match whole words only: no letter or digit may touch either end of the match (Unicode-aware, so "ü" counts as a
