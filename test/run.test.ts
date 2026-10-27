@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdir, writeFile, readFile, readdir, symlink, stat, appendFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, symlink, stat, appendFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runOnce } from '../src/run';
 import type { Item } from '../src/engine';
@@ -7,7 +7,8 @@ import { readHistory, undoMoves, selectForUndo, appendHistory, newRunId } from '
 import { stateFiles } from '../src/state';
 import { resolveLayout } from '../src/paths';
 import { acquireLock } from '../src/lock';
-import { failingModel, model, sandbox, tree, type Sandbox } from './helpers';
+import { HelperError } from '../src/process';
+import { failingModel, model, sandbox, swapForSymlink, tree, type Sandbox } from './helpers';
 
 const exists = (p: string) => stat(p).then(() => true, () => false);
 const UNI = 'VO 123.456 Machine Learning exercise sheet';
@@ -69,44 +70,50 @@ for (const [label, patch] of hostile) test(`hostile model output fails closed: $
   const r = await runOnce(sb.config, { apply: true, model: m });
   expect(r.items[0]).toMatchObject({ outcome: 'review', reason: 'invalid_response' });
   expect(await readdir(sb.review)).toEqual(['note.txt']);
-  expect((await readdir(sb.root)).sort()).toEqual(['_Inbox']);
+  expect((await readdir(sb.root)).sort()).toEqual(['01_Uni', '02_Admin & Finanzen', '03_Projekte & Dev', '04_Persönlich', '_Inbox']);
   expect(await readdir(sb.dir)).not.toContain('evil.txt');
  } finally { await sb.cleanup(); }
 });
 test('model output can never change the extension, even with a valid route', async () => {
  const sb = await sandbox(); try {
   await put(sb, 'bill.txt', 'Drei Rechnung 03.10.2026');
-  await runOnce(sb.config, { apply: true, model: model({ route: 'invoices', documentDate: '2026-10-03', sender: 'Drei', suggestedName: '2026-10-03_Drei.sh' }) });
-  // smuggled field => whole response rejected, rule route still applies with the ORIGINAL name
-  expect(await readdir(join(sb.root, '02_Admin & Finanzen', 'Rechnungen'))).toEqual(['bill.txt']);
+  const r = await runOnce(sb.config, { apply: true, model: model({ route: 'invoices', documentDate: '2026-10-03', sender: 'Drei', suggestedName: '2026-10-03_Drei.sh' }) });
+  // smuggled field => the whole response is rejected (a definite "invalid" answer): the file goes to review with its ORIGINAL name
+  expect(r.items[0]).toMatchObject({ outcome: 'review', reason: 'invalid_response' });
+  expect(await readdir(sb.review)).toEqual(['bill.txt']); expect(await readdir(join(sb.root, '02_Admin & Finanzen'))).toEqual([]);
  } finally { await sb.cleanup(); }
 });
-test('invoice: validated model date+sender produce the locked name; invented ones keep the original', async () => {
+test('invoice: deterministic date+sender need no model; for missing fields only validated model values are used', async () => {
  const sb = await sandbox(); try {
   await put(sb, 'scan1.txt', 'Hutchison Drei Austria\nRechnung Nr. 4711\nRechnungsdatum 03.10.2026\nIBAN AT12 3456');
-  await put(sb, 'scan2.txt', 'Drei\nRechnung\nRechnungsdatum 03.10.2026');
-  const m = async (f: string) => ({ version: 2, route: 'invoices', needsReview: false, ...(f === 'scan1.txt' ? { documentDate: '2026-10-03', sender: 'Drei' } : { documentDate: '2026-11-11', sender: 'Drei' }) });
+  await put(sb, 'scan2.txt', 'Rechnung\nzahlbar innerhalb von 14 Tagen'); // no date, no sender in the text: model is asked, but its values are not in the text
+  const calls: (string | null | undefined)[] = [];
+  const m: import('../src/classifier').ModelCall = async (f, _t, _c, locked) => { calls.push(f); calls.push(locked); return { version: 2, route: 'invoices', needsReview: false, documentDate: '2026-11-11', sender: 'Drei' }; };
   const r = await runOnce(sb.config, { apply: true, model: m });
   expect(r.counts.moved).toBe(2);
+  expect(calls).toEqual(['scan2.txt', 'invoices']); // scan1 never reached the model; scan2's call had the route locked
   expect((await readdir(join(sb.root, '02_Admin & Finanzen', 'Rechnungen'))).sort()).toEqual(['2026-10-03_Drei-Rechnung.txt', 'scan2.txt']);
   const h = await readHistory(stateFiles(sb.config).history);
   expect(h.filter(x => x.type === 'move' && x.renamed)).toHaveLength(1);
  } finally { await sb.cleanup(); }
 });
-test('conflicting rules go to the model; weak/no signal goes to the model; rule+model disagreement goes to review', async () => {
+test('conflicting rules go to the model; a rule hit is final; model failures: definite -> review, transient -> pending', async () => {
  const sb = await sandbox(); try {
-  let calls = 0; const m = (route: string) => async () => { calls++; return { version: 2, route, documentDate: '', sender: '', needsReview: false }; };
+  let calls = 0; const locks: (string | null | undefined)[] = [];
+  const m = (route: string): import('../src/classifier').ModelCall => async (_f, _t, _c, locked) => { calls++; locks.push(locked); return { version: 2, route, documentDate: '', sender: '', needsReview: false }; };
   await put(sb, 'conflict.txt', 'Rechnung for the github.com repository');
   await runOnce(sb.config, { apply: false, model: m('dev') });
-  expect(calls).toBe(1);
-  await put(sb, 'contract.txt', 'Mietvertrag Wohnung 5'); // rule: contracts (naming wanted -> model asked, disagrees)
+  expect(calls).toBe(1); expect(locks).toEqual([null]);
+  await put(sb, 'contract.txt', 'Mietvertrag Wohnung 5'); // rule: contracts; the model is only asked for the missing date/sender, route locked
   const r = await runOnce(sb.config, { apply: false, model: m('personal') });
-  expect(r.items.find(i => i.file === 'contract.txt')).toMatchObject({ action: 'review', reason: 'rule_model_disagreement' });
-  const ok = await runOnce(sb.config, { apply: false, model: m('contracts'), useCache: false });
-  expect(ok.items.find(i => i.file === 'contract.txt')).toMatchObject({ action: 'move', route: 'contracts', tier: 'rule', destination: '02_Admin & Finanzen/Verträge/contract.txt' });
+  expect(r.items.find(i => i.file === 'contract.txt')).toMatchObject({ action: 'move', route: 'contracts', tier: 'rule', destination: '02_Admin & Finanzen/Verträge/contract.txt' });
+  expect(locks.at(-1)).toBe('contracts');
   const down = await runOnce(sb.config, { apply: false, model: failingModel, useCache: false });
-  expect(down.items.find(i => i.file === 'contract.txt')).toMatchObject({ action: 'move', route: 'contracts', reason: 'rule_match_model_unavailable' });
+  expect(down.items.find(i => i.file === 'contract.txt')).toMatchObject({ action: 'review', reason: 'model_failed' }); // definite failure
   expect(down.items.find(i => i.file === 'conflict.txt')).toMatchObject({ action: 'review', reason: 'model_failed' });
+  const busy = await runOnce(sb.config, { apply: false, model: async () => { throw new HelperError('helper_unavailable'); }, useCache: false });
+  expect(busy.items.find(i => i.file === 'conflict.txt')).toMatchObject({ action: 'defer', outcome: 'pending', reason: 'model_unavailable' }); // transient: stays in _Inbox
+  expect(busy.items.find(i => i.file === 'contract.txt')).toMatchObject({ action: 'defer', outcome: 'pending', reason: 'model_unavailable' });
  } finally { await sb.cleanup(); }
 });
 test('unavailable model / empty text / unsupported type / unsafe name all end in review', async () => {
@@ -118,14 +125,16 @@ test('unavailable model / empty text / unsupported type / unsafe name all end in
   expect(await readdir(sb.review)).toEqual(['a.txt', 'empty.txt', 'x.zip']);
  } finally { await sb.cleanup(); }
 });
-test('transient helper failures are retried a bounded number of times', async () => {
+test('transient helper failures are retried a bounded number of times; definite failures are not retried', async () => {
  const sb = await sandbox({ classifierRetries: 2 }); try {
   await put(sb, 'a.txt', 'unclear'); let n = 0;
-  const flaky = async () => { if (++n < 3) throw new Error('boom'); return { version: 2, route: 'personal', documentDate: '', sender: '', needsReview: false }; };
+  const flaky = async () => { if (++n < 3) throw new HelperError('helper_timeout'); return { version: 2, route: 'personal', documentDate: '', sender: '', needsReview: false }; };
   const r = await runOnce(sb.config, { apply: false, model: flaky, sleep: async () => {} });
   expect(n).toBe(3); expect(r.items[0]).toMatchObject({ route: 'personal' });
   n = -10; const r2 = await runOnce(sb.config, { apply: false, model: flaky, sleep: async () => {}, useCache: false });
-  expect(n).toBe(-7); expect(r2.items[0]!.reason).toBe('model_failed');
+  expect(n).toBe(-7); expect(r2.items[0]).toMatchObject({ outcome: 'pending', reason: 'model_timeout' });
+  let k = 0; const r3 = await runOnce(sb.config, { apply: false, model: async () => { k++; throw new HelperError('helper_failed', 1); }, sleep: async () => {}, useCache: false, now: () => Date.now() + 2 * 3_600_000 }); // later: the backoff of r2 has elapsed
+  expect(k).toBe(1); expect(r3.items[0]).toMatchObject({ action: 'review', reason: 'model_failed' });
  } finally { await sb.cleanup(); }
 });
 test('idempotent rescans: unchanged files are served from the content-hash cache; changes and --no-cache re-classify', async () => {
@@ -141,7 +150,7 @@ test('idempotent rescans: unchanged files are served from the content-hash cache
 });
 test('duplicate of an existing destination file goes to review; nothing is deleted or overwritten', async () => {
  const sb = await sandbox(); try {
-  await mkdir(join(sb.root, '01_Uni')); await writeFile(join(sb.root, '01_Uni', 'sheet.txt'), UNI);
+  await mkdir(join(sb.root, '01_Uni'), { recursive: true }); await writeFile(join(sb.root, '01_Uni', 'sheet.txt'), UNI);
   await put(sb, 'sheet.txt', UNI);
   const r = await apply(sb);
   expect(r.items[0]).toMatchObject({ outcome: 'duplicate', reason: 'duplicate_of_existing' });
@@ -152,7 +161,7 @@ test('duplicate of an existing destination file goes to review; nothing is delet
 });
 test('different content with the same name is suffixed, never overwritten', async () => {
  const sb = await sandbox(); try {
-  await mkdir(join(sb.root, '01_Uni')); await writeFile(join(sb.root, '01_Uni', 'sheet.txt'), `${UNI} v1`);
+  await mkdir(join(sb.root, '01_Uni'), { recursive: true }); await writeFile(join(sb.root, '01_Uni', 'sheet.txt'), `${UNI} v1`);
   await put(sb, 'sheet.txt', UNI); await apply(sb);
   expect(await readFile(join(sb.root, '01_Uni', 'sheet.txt'), 'utf8')).toBe(`${UNI} v1`);
   expect(await readFile(join(sb.root, '01_Uni', 'sheet (2).txt'), 'utf8')).toBe(UNI);
@@ -160,7 +169,7 @@ test('different content with the same name is suffixed, never overwritten', asyn
 });
 test('symlinked destination bucket ends in review inside _Inbox/Needs_Review', async () => {
  const sb = await sandbox(); try {
-  const outside = join(sb.dir, 'outside'); await mkdir(outside); await symlink(outside, join(sb.root, '01_Uni'));
+  const outside = join(sb.dir, 'outside'); await mkdir(outside); await swapForSymlink(sb, '01_Uni', outside);
   await put(sb, 'sheet.txt', UNI);
   const r = await apply(sb);
   expect(r.items[0]).toMatchObject({ outcome: 'review', reason: 'destination_unsafe' });
@@ -189,7 +198,7 @@ test('unstable (still-changing) files are skipped by run and picked up later', a
  const sb = await sandbox({ debounceMs: 5 }); try {
   await put(sb, 'sheet.txt', UNI);
   const r = await apply(sb, { sleep: async () => { await appendFile(join(sb.inbox, 'sheet.txt'), '.'); } });
-  expect(r.skipped).toEqual([{ name: 'sheet.txt', reason: 'unstable' }]); expect(r.counts.moved).toBe(0);
+  expect(r.items).toMatchObject([{ file: 'sheet.txt', outcome: 'pending', reason: 'unstable' }]); expect(r.counts.moved).toBe(0);
   expect((await apply(sb, { sleep: async () => {} })).counts.moved).toBe(1);
  } finally { await sb.cleanup(); }
 });
@@ -265,5 +274,24 @@ test('end to end through a real helper subprocess (protocol v2) incl. availabili
   await writeFile(sb.config.classifier, '#!/bin/sh\nexit 2\n', { mode: 0o755 }); await put(sb, 'x.txt', 'whatever');
   const down = await runOnce(sb.config, { apply: false });
   expect(down.model?.available).toBe(false); expect(down.items[0]).toMatchObject({ reason: 'model_unavailable' });
+ } finally { await sb.cleanup(); }
+});
+test('real helper subprocess: lockedRoute is sent for rule hits, exit codes 2/4/1 map to pending/pending/review', async () => {
+ const sb = await sandbox(); try {
+  const seen = join(sb.dir, 'seen.json');
+  const script = `#!${process.execPath}\nif (process.argv[2]==='--check') { console.log(JSON.stringify({version:2,available:true})); process.exit(0); }\nlet i='';process.stdin.on('data',d=>i+=d);process.stdin.on('end',()=>{require('fs').appendFileSync(${JSON.stringify(seen)}, i+'\\n');const x=JSON.parse(i);console.log(JSON.stringify({version:2,route:x.lockedRoute||'personal',documentDate:'',sender:'',needsReview:false}));});`;
+  await writeFile(sb.config.classifier, script, { mode: 0o755 });
+  await put(sb, 'mv.txt', 'Mietvertrag Wohnung 5'); await put(sb, 'free.txt', 'packing list for the weekend');
+  const r = await runOnce(sb.config, { apply: true });
+  expect(r.counts.moved).toBe(2);
+  const reqs = (await readFile(seen, 'utf8')).trim().split('\n').map(l => JSON.parse(l) as Record<string, unknown>);
+  expect(reqs.find(q => q.filename === 'mv.txt')).toMatchObject({ version: 2, lockedRoute: 'contracts' }); expect('lockedRoute' in reqs.find(q => q.filename === 'free.txt')!).toBe(false);
+  for (const [code, outcome, reason] of [[2, 'pending', 'model_unavailable'], [4, 'pending', 'model_busy'], [1, 'review', 'model_failed'], [3, 'review', 'model_failed']] as const) {
+   await writeFile(sb.config.classifier, `#!/bin/sh\nif [ "$1" = "--check" ]; then echo '{"version":2,"available":true}'; exit 0; fi\ncat >/dev/null\nexit ${code}\n`, { mode: 0o755 });
+   await put(sb, `n${code}.txt`, 'unclear note');
+   const x = await runOnce(sb.config, { apply: false, sleep: async () => {}, useCache: false });
+   expect(x.items.find(i => i.file === `n${code}.txt`), `exit ${code}`).toMatchObject({ outcome: code === 1 || code === 3 ? 'planned' : outcome, reason });
+   await rm(join(sb.inbox, `n${code}.txt`));
+  }
  } finally { await sb.cleanup(); }
 });

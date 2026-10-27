@@ -8,7 +8,7 @@ import { moveNoClobber, withCounter } from '../src/mover';
 import { assertDestDir, assertSource, resolveLayout, UnsafePathError } from '../src/paths';
 import { listCandidates, waitForStable } from '../src/ingest';
 import { acquireLock, lockIsStale } from '../src/lock';
-import { sandbox } from './helpers';
+import { sandbox, swapForSymlink } from './helpers';
 
 async function prepared(sb: Awaited<ReturnType<typeof sandbox>>, name = 'a.txt', body = 'hello') {
  const layout = await resolveLayout(sb.config);
@@ -45,7 +45,7 @@ test('blocklisted / ~ entries in the iCloud root are skipped as sweep sources', 
   await mkdir(join(sb.root, 'Numbers')); await mkdir(join(sb.root, '_Archiv'));
   const c = await listCandidates(await resolveLayout(sb.config), sb.config, 'root');
   expect(c.files.map(f => f.name)).toEqual(['ok.txt']);
-  expect(c.skipped.map(s => `${s.name}:${s.reason}`).sort()).toEqual(['.hidden:dotfile', 'Keynote:protected_name', 'Numbers:directory', 'Pages:protected_name', '_Archiv:directory', '_Inbox:directory', 'notes~1.txt:protected_name', 'x.icloud:icloud_placeholder'].sort());
+  expect(c.skipped.map(s => `${s.name}:${s.reason}`).sort()).toEqual(['.hidden:dotfile', '01_Uni:directory', '02_Admin & Finanzen:directory', '03_Projekte & Dev:directory', '04_Persönlich:directory', 'Keynote:protected_name', 'Numbers:directory', 'Pages:protected_name', '_Archiv:directory', '_Inbox:directory', 'notes~1.txt:protected_name', 'x.icloud:icloud_placeholder'].sort());
  } finally { await sb.cleanup(); }
 });
 test('symlink source is refused (inbox scan skips it, mover refuses it)', async () => {
@@ -76,8 +76,8 @@ test('symlinked _Inbox is rejected as a source parent', async () => {
 test('symlink in a destination component is refused (bucket and sub-folder)', async () => {
  const sb = await sandbox(); try {
   const outside = join(sb.dir, 'outside'); await mkdir(outside);
-  await symlink(outside, join(sb.root, '01_Uni'));
-  await mkdir(join(sb.root, '02_Admin & Finanzen')); await symlink(outside, join(sb.root, '02_Admin & Finanzen', 'Rechnungen'));
+  await swapForSymlink(sb, '01_Uni', outside);
+  await mkdir(join(sb.root, '02_Admin & Finanzen'), { recursive: true }); await symlink(outside, join(sb.root, '02_Admin & Finanzen', 'Rechnungen'));
   const p = await prepared(sb);
   expect(await moveNoClobber(req(sb, p, join(sb.root, '01_Uni')))).toEqual({ kind: 'refused', reason: 'destination_unsafe' });
   expect(await moveNoClobber(req(sb, p, join(sb.root, '02_Admin & Finanzen', 'Rechnungen')))).toEqual({ kind: 'refused', reason: 'destination_unsafe' });
@@ -88,7 +88,7 @@ test('symlink in a destination component is refused (bucket and sub-folder)', as
 });
 test('symlink as destination FILE is never followed or replaced', async () => {
  const sb = await sandbox(); try {
-  await mkdir(join(sb.root, '01_Uni')); await writeFile(join(sb.dir, 'target.txt'), 'orig');
+  await mkdir(join(sb.root, '01_Uni'), { recursive: true }); await writeFile(join(sb.dir, 'target.txt'), 'orig');
   await symlink(join(sb.dir, 'target.txt'), join(sb.root, '01_Uni', 'a.txt'));
   const p = await prepared(sb);
   const r = await moveNoClobber(req(sb, p, join(sb.root, '01_Uni')));
@@ -98,7 +98,7 @@ test('symlink as destination FILE is never followed or replaced', async () => {
 });
 for (const forceFallback of [false, true]) test(`no-clobber collision gets a deterministic suffix (${forceFallback ? 'fallback' : 'exclusive rename'})`, async () => {
  const sb = await sandbox(); try {
-  await mkdir(join(sb.root, '01_Uni')); await writeFile(join(sb.root, '01_Uni', 'a.txt'), 'existing'); await writeFile(join(sb.root, '01_Uni', 'a (2).txt'), 'existing2');
+  await mkdir(join(sb.root, '01_Uni'), { recursive: true }); await writeFile(join(sb.root, '01_Uni', 'a.txt'), 'existing'); await writeFile(join(sb.root, '01_Uni', 'a (2).txt'), 'existing2');
   const p = await prepared(sb);
   const r = await moveNoClobber(req(sb, p, join(sb.root, '01_Uni'), 'a.txt', { rename: { forceFallback } }));
   expect(r).toEqual({ kind: 'moved', to: join(sb.root, '01_Uni', 'a (3).txt'), suffixed: true });
@@ -122,7 +122,7 @@ test('exclusiveRename never replaces an existing file', async () => {
 });
 test('identical content at the destination is a duplicate (reported, nothing deleted or moved)', async () => {
  const sb = await sandbox(); try {
-  await mkdir(join(sb.root, '01_Uni')); await writeFile(join(sb.root, '01_Uni', 'a.txt'), 'hello');
+  await mkdir(join(sb.root, '01_Uni'), { recursive: true }); await writeFile(join(sb.root, '01_Uni', 'a.txt'), 'hello');
   const p = await prepared(sb);
   expect(await moveNoClobber(req(sb, p, join(sb.root, '01_Uni')))).toEqual({ kind: 'duplicate', existing: join(sb.root, '01_Uni', 'a.txt') });
   expect(await readFile(p.src, 'utf8')).toBe('hello');
@@ -174,8 +174,9 @@ test('unstable file (still growing) is skipped; stable file passes', async () =>
   const files = ['done.txt', 'empty.txt', 'growing.txt'].map(name => ({ name, path: join(sb.inbox, name) }));
   const sleep = async () => { const { appendFile } = await import('node:fs/promises'); await appendFile(join(sb.inbox, 'growing.txt'), 'more'); };
   const r = await waitForStable(files, { debounceMs: 5, stabilityRetries: 0 }, sleep);
-  expect(r.stable.map(s => s.name)).toEqual(['done.txt']);
-  expect(r.skipped).toEqual([{ name: 'empty.txt', reason: 'empty_file' }, { name: 'growing.txt', reason: 'unstable' }]);
+  // Empty files are stable (they are handled by the empty-file grace logic in run.ts); only the growing file is unstable.
+  expect(r.stable.map(s => s.name)).toEqual(['done.txt', 'empty.txt']);
+  expect(r.unstable.map(s => s.name)).toEqual(['growing.txt']);
   // a file that stops changing becomes stable on a retry round
   let n = 0; const settle = async () => { if (n++ === 0) { const { appendFile } = await import('node:fs/promises'); await appendFile(join(sb.inbox, 'growing.txt'), 'x'); } };
   expect((await waitForStable([files[2]!], { debounceMs: 5, stabilityRetries: 2 }, settle)).stable.length).toBe(1);

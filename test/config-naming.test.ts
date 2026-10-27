@@ -4,15 +4,23 @@ import { datesInText, validatedDate, validatedSender, targetName, sanitizeStem }
 import { baseJson, defaultConfig as config } from './helpers';
 
 const route = (id: string) => config.routes.find(r => r.id === id)!;
-test('default config validates and carries the Notion Tier-1 patterns', () => {
- expect(config.routes.length).toBe(5);
+test('default config validates and carries the Notion Tier-1 patterns (whole-word, Unicode aware)', () => {
+ expect(config.routes.map(r => r.id)).toEqual(['uni', 'invoices', 'contracts', 'admin', 'dev', 'personal']);
  expect(route('uni').patterns[0]).toBe('VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU');
- expect(route('invoices').patterns[0]).toBe('Rechnung|Invoice|IBAN|ATU\\d{8}|Betrag|Zahlungsziel');
- expect(route('contracts').patterns[0]).toBe('Vertrag|Polizze|Versicherung|Mietvertrag');
- expect(route('dev').patterns[0]).toBe('github\\.com|repository|architecture|schema');
- expect(config.daemon.apply).toBe(false);
- expect(config.naming.datePrefix).toBe(false);
+ expect(route('admin')).toMatchObject({ folder: '02_Admin & Finanzen', rename: false });
+ expect(route('invoices').folder).toBe('02_Admin & Finanzen/Rechnungen'); expect(route('contracts').folder).toBe('02_Admin & Finanzen/Verträge');
+ expect(config.daemon.apply).toBe(false); expect(config.naming.datePrefix).toBe(false); expect(config.allowNonICloudRoot).toBe(false);
+ expect(config.model.maxDeferHours).toBe(24); expect(config.knownSenders.map(k => k.name)).toContain('Wien Energie');
  expect(routePatterns(route('invoices'))[0]!.test('Zahlungsziel: 14 Tage')).toBe(true);
+});
+test('rule patterns are whole-word: embedded matches, other scripts and Unicode letters', () => {
+ const inv = routePatterns(route('invoices')), hit = (t: string) => inv.some(re => re.test(t));
+ expect(hit('Betrag: 12,00')).toBe(true); expect(hit('Rechnungsnummer 5')).toBe(true); expect(hit('Rechnungen 2026')).toBe(true);
+ expect(hit('Bankbetrag')).toBe(false); expect(hit('Überbetrag')).toBe(false); expect(hit('Betragsänderung')).toBe(false);
+ const pers = routePatterns(route('personal')), p = (t: string) => pers.some(re => re.test(t));
+ expect(p('Führerschein Klasse B')).toBe(true); expect(p('Mein Führerschein.')).toBe(true); expect(p('Führerscheinprüfung')).toBe(false);
+ expect(p('Führerschein'.normalize('NFC'))).toBe(true);
+ expect(() => validateConfig({ ...baseJson, routes: [{ ...baseJson.routes[0], patterns: ['('] }] })).toThrow();
 });
 for (const folder of ['../oops', '/tmp/oops', '_Archiv/anything', '01_Uni/../Shortcuts', '01_Uni/.secret', '01_Uni/a\\b', '01_Uni/a~b', 'Pages/x'])
  test(`reject route traversal or protected bucket: ${folder}`, () => expect(() => validateConfig({ ...baseJson, routes: [{ ...baseJson.routes[0], folder }] })).toThrow());
