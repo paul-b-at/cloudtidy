@@ -83,7 +83,7 @@ export function modelFailure(e: unknown): ModelOutcome {
  if (e.exitCode === 2) return { kind: 'transient', reason: 'model_unavailable', retry: false };
  if (e.exitCode === 4) return { kind: 'transient', reason: 'model_busy', retry: true };
  if (e.message === 'helper_failed' && e.exitCode === null) return { kind: 'transient', reason: 'model_crashed', retry: true };
- return { kind: 'failed', reason: (e.token && TOKEN_REASON[e.token]) || 'model_failed' };
+ return { kind: 'failed', reason: (e.token && Object.hasOwn(TOKEN_REASON, e.token) && TOKEN_REASON[e.token]) || 'model_failed' };
 }
 async function callModel(filename: string, text: string, config: Config, deps: ClassifyDeps, locked: string | null): Promise<ModelOutcome> {
  const call = deps.model ?? callHelper, sleep = deps.sleep ?? Bun.sleep;
@@ -96,7 +96,7 @@ async function callModel(filename: string, text: string, config: Config, deps: C
    return { kind: 'ok', result: m };
   } catch (e) {
    last = modelFailure(e);
-   if (last.kind !== 'transient' || !last.retry) return last;
+   if (last.kind !== 'transient' || !last.retry || (e instanceof HelperError && e.skipped)) return last; // a breaker answer is final for this run: no retry, no sleep
   }
  }
  return last;

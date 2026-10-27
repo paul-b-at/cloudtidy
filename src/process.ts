@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-/** `token`: the helper's own diagnostic code from stderr (`classification_failed:<code>`), e.g. `refusal`. Never document text. */
-export class HelperError extends Error { constructor(message: string, readonly exitCode: number | null = null, readonly token: string | null = null) { super(message); } }
+/** `skipped`: no helper call was made (the per-run circuit breaker answered); never an attempt, never retried. `token`: the helper's own diagnostic code from stderr (`classification_failed:<code>`), e.g. `refusal`. Never document text. */
+export class HelperError extends Error { constructor(message: string, readonly exitCode: number | null = null, readonly token: string | null = null, readonly skipped = false) { super(message); } }
 const TOKEN = /^classification_failed:([a-z_]{1,40})$/m;
 // No shell, bounded output, enforced timeout. Never log document contents.
 export function run(command: string, args: string[], input: string, timeout: number, maxBytes = 32768, env?: Record<string, string>): Promise<string> {
