@@ -91,7 +91,7 @@ test('C a run with nothing to sort is exactly one line even with dotfiles, .iclo
   const r = await runOnce(sb.config, { apply: true, model: healthy as never });
   const quiet = renderReport(r, true); expect(quiet.err).toEqual([]);
   expect(quiet.out.length).toBe(1);
-  expect(quiet.out[0]).toContain('nothing to sort'); expect(quiet.out[0]).toContain('1 file(s) held after an undo'); expect(quiet.out[0]).toContain('--no-cache --apply');
+  expect(quiet.out[0]).toContain('nothing to sort'); expect(quiet.out[0]).toContain('1 file(s) held after an undo'); expect(quiet.out[0]).toContain('bun src/cli.ts run --apply --no-cache');
   expect(quiet.out[0]).not.toContain('.DS_Store'); expect(quiet.out[0]).not.toContain('held.txt'); expect(quiet.out[0]).not.toContain('available: nothing');
   const loud = renderReport(r, true, true).out.join('\n');
   for (const n of ['.DS_Store', '.report.pdf.icloud', 'movie.crdownload', 'held.txt']) expect(loud).toContain(n);
@@ -228,7 +228,7 @@ test('G eval:fixtures against the mock model: every deterministic rule-hit label
  expect(r.report.misrouted).toBe(0); expect(r.report.autoInsteadOfReview).toBe(0); // the mock model never auto-routes anything wrongly
  expect(heuristics('svs.txt', await rf(join(FIXTURE_DIR, 'svs_oegk_beitragsvorschreibung.txt'), 'utf8'), defaultConfig)).toBeNull();
  expect(r.report.rows.find(x => x.file === 'svs_oegk_beitragsvorschreibung.txt')!.got).not.toBe('contracts');
- expect(r.unsafe).toEqual([]); expect(r.summary).toContain('unsafe outputs: 0'); expect(r.summary.join('\n')).toMatch(/Accuracy: \d+\/26/);
+ expect(r.unsafe).toEqual([]); expect(r.summary).toContain('unsafe outputs: 0'); expect(r.summary.join('\n')).toMatch(/Accuracy: \d+\/28/);
  for (const inj of r.report.rows.filter(x => x.file.startsWith('inj_'))) { expect(inj.name, inj.file).toBe(inj.file); expect(['review', labels[inj.file]!]).toContain(inj.got); } // never an unsafe name, the right route or review
 });
 test('G a hostile MODEL answer (path in the sender, shell in the date, route words) cannot produce an unsafe name or path either', async () => {
@@ -252,4 +252,195 @@ test('G `bun run eval:fixtures` end to end with a real helper process: prints ac
   expect(code).toBe(0); expect(out).toContain('unsafe outputs: 0'); expect(out).toMatch(/Accuracy: \d+\/\d+/); expect(out).toContain('Review rate:'); expect(out).toContain('Latency:');
   expect(JSON.parse(await rf(resolve('package.json'), 'utf8')).scripts['eval:fixtures']).toBe('bun src/fixture-eval.ts');
  } finally { await sb.cleanup(); }
+});
+
+// ================================================================ Round 6 review fixes (safety + conformance)
+import { link } from 'node:fs/promises';
+import { extractNaming, knownSenderMatches, validatedSender } from '../src/naming';
+import { plistInput, renderPlist } from '../src/install';
+import { BUSY_CAP } from '../src/pending';
+const fixtureText = (n: string) => rf(join(FIXTURE_DIR, n), 'utf8');
+const routeOf = (id: string) => defaultConfig.routes.find(r => r.id === id)!;
+async function expire(sb: Sandbox, t: { v: number }, run: (m: never) => Promise<unknown>) { for (let i = 0; i < 3; i++) { await run(unavailable as never); t.v += 10 * HOUR; } } // 3 apply attempts over 30 h: expired
+
+test('HIGH-1 one unreadable destination folder (chmod 000) errors only its own file; the unrelated file still moves and previews/scan do not throw', async () => {
+ const sb = await sandbox(); const bucket = join(sb.root, '02_Admin & Finanzen'); try {
+  await put(sb, 'a.txt', 'Rechnung Nr. 1\nBetrag 10,00 EUR'); await put(sb, 'unrelated.txt', 'Flugticket Wien');
+  await chmod(bucket, 0o000);
+  if (await ls(bucket).then(() => true, () => false)) { console.warn('HIGH-1 test: permissions are not enforced for this user (root); run it as an unprivileged user'); return; }
+  const m = model({ route: 'personal' }) as never;
+  for (const o of [{ apply: false }, { apply: false, readOnly: true }]) {
+   const r = await runOnce(sb.config, { ...o, model: m }); const a = r.items.find(i => i.file === 'a.txt')!; // must not throw
+   expect(a.outcome).toBe('error'); expect(a.reason).toContain('destination_unreadable:EACCES'); expect(a.renamed).toBe(false); expect(r.items.find(i => i.file === 'unrelated.txt')!.outcome).toBe('planned');
+  }
+  const r = await runOnce(sb.config, { apply: true, model: m });
+  const by = Object.fromEntries(r.items.map(i => [i.file, i.outcome]));
+  expect(by['unrelated.txt']).toBe('moved'); expect(by['a.txt']).toBe('error'); // like before round 6: only the affected file errors
+  expect(await ls(join(sb.root, '04_Persönlich'))).toContain('unrelated.txt');
+ } finally { await chmod(bucket, 0o755).catch(() => {}); await sb.cleanup(); }
+});
+
+test('HIGH-2 an expired file whose final call was model_busy keeps its backoff: 1 call in 6 runs, and the files behind it are not starved', async () => {
+ const sb = await sandbox({ model: { maxDeferHours: 24 }, maxRunSeconds: 250 }); try {
+  await put(sb, 'a1.txt', 'unclear a1'); await put(sb, 'a2.txt', 'unclear a2'); await put(sb, 'a3.txt', 'unclear a3'); await put(sb, 'zz_uni.txt', 'VO 123.456 Algorithmen');
+  const t = { v: T0 }; let clk = 0, calls = 0; const counting = (async () => { calls++; clk += 100_000; throw new HelperError('helper_failed', 4); }) as never;
+  const run = (m: never) => runOnce(sb.config, { apply: true, now: () => t.v, sleep: async () => {}, model: m, clock: () => clk });
+  const quiet = (async () => { throw new HelperError('helper_unavailable'); }) as never;
+  await mkdir(sb.state, { recursive: true }); const store = await PendingStore.load(stateFiles(sb.config).pending, () => t.v);
+  for (let i = 0; i < 3; i++) { for (const n of ['a1', 'a2', 'a3']) store.touch(`${n}.txt`, 'model', 'model_unavailable', { sha256: await sha256File(join(sb.inbox, `${n}.txt`)), attempt: true, apply: true }); t.v += 10 * HOUR; }
+  await store.save(); void quiet;
+  const first = await run(counting); // final calls (expired): busy for a1 and a2 (100 s each, 250 s budget -> a3 at 200 s too); zz_uni is behind them
+  const afterFirst = calls; expect(afterFirst).toBeGreaterThanOrEqual(2);
+  for (let i = 0; i < 6; i++) { t.v += 2 * 60_000; clk = 0; await run(counting); }
+  expect(calls).toBe(afterFirst); // 6 more runs 2 min apart: no call at all (the backoff holds), not one per run
+  expect(await inboxFiles(sb)).not.toContain('zz_uni.txt'); expect(await readdir(join(sb.root, '01_Uni'))).toContain('zz_uni.txt'); // the rule-routable file moved (first run: left by budget; later runs: no model needed)
+  void first;
+ } finally { await sb.cleanup(); }
+});
+
+test('HIGH-2b (the review scenario) one expired+busy file: 1 helper call in 6 runs 2 min apart', async () => {
+ const sb = await sandbox({ model: { maxDeferHours: 24 } }); try {
+  await put(sb, 'note.txt', 'a short unclear note'); const t = { v: T0 }; let calls = 0;
+  const busyCount = (async () => { calls++; throw new HelperError('helper_failed', 4); }) as never;
+  const run = (m: never) => runOnce(sb.config, { apply: true, now: () => t.v, sleep: async () => {}, model: m });
+  await expire(sb, t, run as never); calls = 0;
+  await run(busyCount); expect(calls).toBe(1); // the final call
+  for (let i = 0; i < 5; i++) { t.v += 2 * 60_000; await run(busyCount); }
+  expect(calls).toBe(1);
+  const e = (await PendingStore.load(stateFiles(sb.config).pending, () => t.v)).get('note.txt')!; expect(e.reason).toBe('model_busy');
+ } finally { await sb.cleanup(); }
+});
+
+test('M1 a permanently busy file is not pending forever: after 4 x maxDeferHours a busy final call sends it to review (deferred_too_long:model_busy)', async () => {
+ const sb = await sandbox({ model: { maxDeferHours: 24 } }); try {
+  await put(sb, 'note.txt', 'a short unclear note'); const t = { v: T0 };
+  const run = (m: never) => runOnce(sb.config, { apply: true, now: () => t.v, sleep: async () => {}, model: m });
+  await expire(sb, t, run as never);
+  const r1 = await run(busy as never); expect(r1.items[0]).toMatchObject({ outcome: 'pending', reason: 'model_busy' });
+  const since = (await PendingStore.load(stateFiles(sb.config).pending, () => t.v)).get('note.txt')!.applySince!;
+  t.v = since + (BUSY_CAP * 24 - 1) * HOUR; expect((await run(busy as never)).items[0]).toMatchObject({ outcome: 'pending', reason: 'model_busy' }); // still inside the cap
+  t.v = since + (BUSY_CAP * 24 + 1) * HOUR; const r3 = await run(busy as never);
+  expect(r3.items[0]).toMatchObject({ outcome: 'review', reason: 'deferred_too_long:model_busy' }); expect(await readdir(sb.review)).toEqual(['note.txt']);
+ } finally { await sb.cleanup(); }
+});
+
+test('L6 the pending text after a busy final call says it stays pending (not "goes to Needs_Review at the next attempt")', async () => {
+ const sb = await sandbox({ model: { maxDeferHours: 24 } }); try {
+  await put(sb, 'note.txt', 'a short unclear note'); const t = { v: T0 };
+  const run = (m: never) => runOnce(sb.config, { apply: true, now: () => t.v, sleep: async () => {}, model: m });
+  await expire(sb, t, run as never);
+  const d = (await run(busy as never)).items[0]!.detail!;
+  expect(d).toContain('busy'); expect(d).toContain('stays pending'); expect(d).not.toContain('at the next attempt'); expect(d).toMatch(/after ~\d+ h/);
+ } finally { await sb.cleanup(); }
+});
+
+test('M2 the quiet no-op line counts files that can never be sorted (symlink, ...), but stays silent for dotfiles, .icloud, partial downloads', async () => {
+ const sb = await sandbox(); try {
+  await put(sb, '.DS_Store', 'x'); await put(sb, 'a.crdownload', 'x');
+  expect(renderReport(await runOnce(sb.config, { apply: true, model: healthy as never }), true).out).toHaveLength(1);
+  expect(renderReport(await runOnce(sb.config, { apply: true, model: healthy as never }), true).out[0]).not.toContain("can't be handled");
+  await symlink('/etc/hostname', join(sb.inbox, 'link.txt'));
+  const out = renderReport(await runOnce(sb.config, { apply: true, model: healthy as never }), true).out;
+  expect(out).toHaveLength(1); expect(out[0]).toContain("1 file(s) can't be handled (symlink)"); expect(out[0]).toContain('--verbose'); expect(out[0]).not.toContain('.DS_Store');
+ } finally { await sb.cleanup(); }
+});
+
+test('M3 eval:fixtures does not give false assurance: documents that were not evaluated -> warning + exit 2; a re-routed injection -> exit 1', async () => {
+ const down = await runFixtureEval(defaultConfig, { model: unavailable as never });
+ expect(down.notEvaluated.length).toBeGreaterThan(5); expect(down.exitCode).toBe(2); expect(down.summary.join('\n')).toContain('NOT evaluated'); expect(down.summary.join('\n')).toContain('not meaningful');
+ const ok = await runFixtureEval(defaultConfig, { model: reviewModel });
+ expect(ok.notEvaluated).toEqual([]); expect(ok.exitCode).toBe(0); expect(ok.injectionFailures).toEqual([]);
+ const forced = await runFixtureEval(defaultConfig, { model: (async () => ({ version: 2, route: 'contracts', documentDate: '', sender: '', needsReview: false })) as never }); // the injection "worked"
+ expect(forced.injectionFailures.some(x => x.startsWith('inj_json_escape_note.txt'))).toBe(true); expect(forced.exitCode).toBe(1); expect(forced.unsafe).toEqual([]);
+ expect(forced.summary.join('\n')).toContain('injection documents that were not resisted:');
+ const svs = ok.summary.join('\n'); expect(svs).toContain('documented-acceptable review');
+});
+
+test('M3 end to end: a helper that is always busy leaves documents pending -> the CLI prints the warning and exits 2', async () => {
+ const sb = await sandbox(); try {
+  const helper = join(sb.dir, 'busy-classify'); await writeFile(helper, '#!/bin/sh\ncat >/dev/null\nexit 4\n'); await chmod(helper, 0o755);
+  const cfg = join(sb.dir, 'cfg.json'); await writeFile(cfg, JSON.stringify({ ...baseJson, root: sb.root, allowNonICloudRoot: true, stateDir: join(sb.dir, 's'), logDir: join(sb.dir, 'l'), classifier: helper, ocr: helper, classifierRetries: 0 }));
+  const p = Bun.spawn([process.execPath, resolve('src/fixture-eval.ts'), '--config', cfg], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, CLOUDTIDY_QUIET: '1' } });
+  const [out, code] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+  expect(code).toBe(2); expect(out).toContain('NOT evaluated');
+ } finally { await sb.cleanup(); }
+});
+
+test('M1 fixtures: every injection attack also exists without a rule hit, so it reaches the model on the Mac', async () => {
+ for (const n of ['inj_route_force_nomatch.txt', 'inj_filename_nomatch.txt', 'inj_path_traversal_notes.txt', 'inj_json_escape_note.txt']) expect(heuristics(n, await fixtureText(n), defaultConfig), n).toBeNull();
+ for (const n of ['inj_route_force_uni.txt', 'inj_filename_passport.txt']) expect(heuristics(n, await fixtureText(n), defaultConfig), n).not.toBeNull(); // kept as rule-tier injection tests
+ expect((await labelsOf())['inj_route_force_nomatch.txt']).toBe('review');
+});
+
+test('L1 a hard link named like a log is never truncated through; L2 normal rotation still works (O_NOFOLLOW + ftruncate)', async () => {
+ const sb = await sandbox(); try {
+  await mkdir(sb.config.logDir, { recursive: true }); const dir = sb.config.logDir, victim = join(sb.dir, 'victim.txt'); await writeFile(victim, 'v'.repeat(100));
+  await link(victim, join(dir, 'launchd.out.log')); const warnings: string[] = [];
+  expect(await rotateLogs(dir, ['launchd.out.log'], 10, 3, w => warnings.push(w))).toEqual([]);
+  expect((await stat(victim)).size).toBe(100); expect(warnings).toHaveLength(1); expect(warnings[0]).toContain('hard link');
+  const f = join(dir, 'launchd.err.log'); await writeFile(f, 'y'.repeat(100));
+  expect(await rotateLogs(dir, ['launchd.err.log'], 10, 3, w => warnings.push(w))).toEqual(['launchd.err.log']); expect((await stat(f)).size).toBe(0); expect((await stat(`${f}.1`)).size).toBe(100);
+ } finally { await sb.cleanup(); }
+});
+
+test('L5 the budget outcome is recorded in status.json and doctor/status warn when the last runs hit it', async () => {
+ const sb = await sandbox({ maxRunSeconds: 60 }); try {
+  for (const n of 'abc') await put(sb, `${n}.txt`, `unclear ${n}`);
+  let clk = 0; const slow = (async (f: string, ...rest: unknown[]) => { clk += 100_000; return healthy(f, ...rest); }) as never;
+  const status = async () => JSON.parse(await rf(stateFiles(sb.config).status, 'utf8'));
+  await runOnce(sb.config, { apply: false, now: () => T0, sleep: async () => {}, model: slow, clock: () => clk }); clk = 0;
+  expect((await status()).budget).toMatchObject({ hit: true, left: 2, streak: 1 }); // dry-run: nothing moved, so the budget is hit again
+  clk = 0; await runOnce(sb.config, { apply: false, now: () => T0, sleep: async () => {}, model: slow, clock: () => clk });
+  expect((await status()).budget).toMatchObject({ hit: true, streak: 2 });
+  const line = formatChecks(await doctor(sb.config)).split('\n').find(l => l.includes('last run: time budget'))!;
+  expect(line.startsWith('! ')).toBe(true); expect(line).toContain('2 run(s) in a row');
+  await runOnce(sb.config, { apply: false, now: () => T0, sleep: async () => {}, model: healthy as never, clock: () => 0 });
+  expect((await status()).budget).toEqual({ hit: false, left: 0, streak: 0 }); expect(formatChecks(await doctor(sb.config))).not.toContain('last run: time budget');
+ } finally { await sb.cleanup(); }
+});
+
+test('L7 the generated LaunchAgent never sets CLOUDTIDY_QUIET (it would hide errors, rotation warnings and journal messages)', () => {
+ const xml = renderPlist(plistInput(defaultConfig, '/tmp/cfg.json', '/tmp/inbox', '/usr/local/bin/bun', '/usr/bin/pdftotext'));
+ expect(xml).not.toContain('CLOUDTIDY_QUIET'); expect(xml).toContain('CLOUDTIDY_CONTEXT');
+});
+
+test('L5(conformance) a dry-run `run` prints the verb "review" for review proposals, like scan and --apply', async () => {
+ const sb = await sandbox(); try {
+  await rm(join(sb.root, '02_Admin & Finanzen', 'Rechnungen'), { recursive: true }); await put(sb, 'fm.txt', 'Rechnung Nr. 5\nBetrag 5,00 EUR');
+  const lines = renderReport(await runOnce(sb.config, { apply: false, model: healthy as never }), false).out;
+  expect(lines.find(l => l.includes('fm.txt'))!).toMatch(/^review\s+fm\.txt/); expect(lines.join('\n')).not.toMatch(/^planned\s+fm\.txt/m);
+ } finally { await sb.cleanup(); }
+});
+
+// ---------------------------------------------------------------- H1 known senders
+test('H1 "drei" / "magenta" / "verbund" in running text are not senders; the Mietvertrag fixture is not renamed to Drei-Vertrag', async () => {
+ const inv = routeOf('invoices'), con = routeOf('contracts');
+ for (const txt of ['Zahlbar innerhalb von drei Tagen', 'Wandfarbe magenta, 2 Eimer', 'Im Verbund mit der Gemeinde', 'Kaution drei Monatsmieten', 'Drei Tage nach Erhalt']) {
+  const body = `Rechnung Maler Huber\n${'Leistung der Firma. '.repeat(80)}\n${txt}`; // the phrase is beyond the letterhead window
+  expect(extractNaming(body, inv, defaultConfig).sender, txt).toBeNull();
+ }
+ expect(extractNaming('Foo\nKaution drei Monatsmieten', con, defaultConfig).sender).toBeNull();
+ const text = await fixtureText('mietvertrag_musterstrasse.txt'); expect(extractNaming(text, con, defaultConfig).sender).toBeNull();
+ const r = await runFixtureEval(defaultConfig, { model: reviewModel }); expect(r.report.rows.find(x => x.file === 'mietvertrag_musterstrasse.txt')!.name).not.toContain('Drei');
+ expect(validatedSender('Drei', 'Rechnung\n' + 'x '.repeat(900) + 'drei Tagen', defaultConfig)).toBeNull(); // a model that suggests the ordinary word does not get it either
+});
+
+test('H1 an explicit Absender:/From: line beats a bare known-sender hit', () => {
+ const inv = routeOf('invoices');
+ const t = 'Foo Consulting GmbH\nRechnung\nRechnungsdatum: 03.11.2026\nZahlbar innerhalb von drei Tagen\nDrei Tagen nach Erhalt\nAbsender: Foo Consulting';
+ expect(extractNaming(t, inv, defaultConfig).sender).toBe('Foo Consulting');
+ expect(validatedSender('Foo Consulting', t, defaultConfig)).toBe('Foo-Consulting');
+ // even a real known sender in the body does not beat the letterhead/Absender
+ expect(extractNaming('Absender: Foo Consulting\nRechnung\nWien Energie Rechnung liegt bei', inv, defaultConfig).sender).toBe('Foo Consulting');
+ expect(extractNaming('Foo Consulting GmbH\nRechnung\nWien Energie hat uns beliefert', inv, defaultConfig).sender).toBe('Foo Consulting GmbH');
+});
+
+test('H1 the real Drei / Magenta / Verbund / Wien Energie invoices still name correctly (letterhead, company suffix, capitals, aliases); matching is case-sensitive', () => {
+ const inv = routeOf('invoices'), s = (t: string) => extractNaming(t, inv, defaultConfig).sender;
+ expect(s('Drei\nRechnung 10/2026')).toBe('Drei'); expect(s('Hutchison Drei Austria GmbH\nRechnung')).toBe('Drei'); expect(s('DREI\nRechnung')).toBe('Drei');
+ expect(s('Rechnung\n' + 'x '.repeat(900) + 'Drei Austria GmbH')).toBe('Drei'); // beyond the window but followed by a company suffix
+ expect(s('Magenta Telekom\nRechnung')).toBe('Magenta'); expect(s('Rechnung\n' + 'x '.repeat(900) + 'VERBUND AG')).toBe('Verbund'); expect(s('VERBUND AG\nRechnung')).toBe('Verbund');
+ expect(s('Wien Energie GmbH\nRechnung')).toBe('Wien Energie'); expect(s('WIEN ENERGIE\nRechnung')).toBe('Wien Energie');
+ expect(s('Rechnung\nvon wien energie')).toBeNull(); // wrong case: not the configured spelling
+ expect([...knownSenderMatches('Allianz Versicherung AG', defaultConfig)]).toEqual(['Allianz']);
 });
