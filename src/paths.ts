@@ -1,4 +1,4 @@
-import { lstat, mkdir, realpath } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, isAbsolute, sep } from 'node:path';
 import { BUILTIN_BLOCKLIST, INBOX, REVIEW, safeName, type Config } from './config';
@@ -10,7 +10,9 @@ export type SourceKind = 'inbox' | 'root';
 export const key = (s: string) => s.normalize('NFC').toLowerCase();
 
 export async function resolveLayout(config: Config): Promise<Layout> {
- const root = await realpath(config.root);
+ let root: string;
+ try { root = await realpath(config.root); }
+ catch (e) { const code = (e as NodeJS.ErrnoException).code; throw Error(code === 'ENOENT' || code === 'ENOTDIR' ? `root folder not found: ${config.root} (check "root" in the config; with the default, is iCloud Drive turned on for this Mac?)` : `root folder ${config.root} cannot be opened (${code ?? 'error'}; Full Disk Access?)`); }
  return { root, inbox: join(root, INBOX), review: join(root, INBOX, REVIEW) };
 }
 export function blockedNames(config: Config): Set<string> { return new Set([...BUILTIN_BLOCKLIST, ...config.blocklist].map(key)); }
@@ -29,43 +31,32 @@ export function segmentsFromRoot(layout: Layout, abs: string): string[] {
 }
 
 /**
- * Validates a destination directory: inside a configured bucket or `_Inbox/Needs_Review`, never `_Archiv` or an app
- * container, and no symlink in any existing component. With `create`, missing components are created one at a time
- * (each re-validated). Residual risk: a component swapped for a symlink between this check and the rename (no openat in Bun).
+ * Validates a destination directory: inside a configured bucket or `_Inbox/Needs_Review`, never `_Archiv` or an app container, every
+ * component exists as a real directory (no symlink, realpath-contained). NEVER creates anything: a folder that is not there yet (fresh
+ * Mac, iCloud not synced) would later collide as "Rechnungen 2" with the real one. A missing folder throws `folder_missing:<relative path>`;
+ * `cloudtidy init --yes` is the only thing that creates folders. Residual risk: a component swapped for a symlink between this check and
+ * the rename (no openat in Bun; the mover re-checks the realpath after the rename and rolls back).
  */
-export async function assertDestDir(layout: Layout, config: Config, dir: string, create = false): Promise<string> {
+export async function assertDestDir(layout: Layout, config: Config, dir: string): Promise<string> {
  const parts = segmentsFromRoot(layout, dir);
  const top = parts[0] === undefined ? undefined : key(parts[0]);
  const inReview = parts.length >= 2 && key(parts[0]!) === key(INBOX) && key(parts[1]!) === key(REVIEW);
  if (!parts.length || !(inReview || (top !== undefined && bucketTops(config).has(top)))) throw new UnsafePathError(dir, 'not_a_configured_destination');
  if (parts.some(p => protectedName(p, config))) throw new UnsafePathError(dir, 'protected_name');
  if (parts.some(p => !safeName(p))) throw new UnsafePathError(dir, 'unsafe_segment');
- let cur = layout.root, missing = false;
- for (const seg of parts) {
+ let cur = layout.root;
+ for (const [i, seg] of parts.entries()) {
   cur = join(cur, seg);
-  if (!missing) {
-   try {
-    const s = await lstat(cur);
-    if (s.isSymbolicLink()) throw new UnsafePathError(dir, 'symlink_component');
-    if (!s.isDirectory()) throw new UnsafePathError(dir, 'not_a_directory');
-    if (key(await realpath(cur)) !== key(cur)) throw new UnsafePathError(dir, 'realpath_mismatch');
-    continue;
-   } catch (e) {
-    if (e instanceof UnsafePathError) throw e;
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-    missing = true;
-   }
-  }
-  if (!create) continue;
-  // Never create a top-level bucket (or _Inbox): on a fresh Mac, or before iCloud has finished syncing, a locally created "01_Uni" later
-  // collides with the real one ("01_Uni 2"). Sub-folders inside an existing bucket are fine. `cloudtidy init` creates the taxonomy explicitly.
-  if (cur === join(layout.root, parts[0]!)) throw new UnsafePathError(dir, 'bucket_missing');
-  await mkdir(cur);
-  const s = await lstat(cur);
-  if (!s.isDirectory() || s.isSymbolicLink()) throw new UnsafePathError(dir, 'symlink_component');
+  let s;
+  try { s = await lstat(cur); }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') throw new UnsafePathError(dir, `${FOLDER_MISSING}${parts.slice(0, i + 1).join('/')}`); throw e; }
+  if (s.isSymbolicLink()) throw new UnsafePathError(dir, 'symlink_component');
+  if (!s.isDirectory()) throw new UnsafePathError(dir, 'not_a_directory');
+  if (key(await realpath(cur)) !== key(cur)) throw new UnsafePathError(dir, 'realpath_mismatch');
  }
  return cur;
 }
+export const FOLDER_MISSING = 'folder_missing:';
 export class NonICloudRootError extends Error { constructor(readonly root: string) { super(`root ${root} is not under ~/Library/Mobile Documents/com~apple~CloudDocs; refusing to modify files. Set "allowNonICloudRoot": true in the config only if that is intended.`); } }
 /** Where iCloud Drive lives for this user (resolved through symlinks if it exists). */
 export async function icloudDriveRoot(home = homedir()): Promise<string> {

@@ -7,7 +7,7 @@ import { callHelper, checkModel, classify, heuristics, safeSlice, parseModelResu
 import { evaluate, formatReport, parseLabels, stats } from '../src/evaluate';
 import { run } from '../src/process';
 import type { Item } from '../src/engine';
-import { defaultConfig as config, model, sandbox, tree, type Sandbox } from './helpers';
+import { defaultConfig as config, model, sandbox, tree, type Sandbox, inboxFiles } from './helpers';
 
 const cli = (args: string[], env: Record<string, string> = {}) => Bun.spawn([process.execPath, resolve('src/cli.ts'), ...args], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, ...env, CLOUDTIDY_QUIET: '1' } });
 async function runCli(args: string[], env: Record<string, string> = {}) {
@@ -37,7 +37,7 @@ const EXPECTED_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
     <string>/Users/paul/Library/Mobile Documents/com~apple~CloudDocs/_Inbox</string>
   </array>
   <key>StartInterval</key>
-  <integer>600</integer>
+  <integer>120</integer>
   <key>ThrottleInterval</key>
   <integer>15</integer>
   <key>RunAtLoad</key>
@@ -57,7 +57,7 @@ const EXPECTED_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `;
 test('plist snapshot', () => {
- expect(renderPlist({ bun: '/Users/paul/.bun/bin/bun', script: '/Users/paul/dev/cloudtidy/src/cli.ts', configPath: '/Users/paul/dev/cloudtidy/config/default.config.json', inbox: '/Users/paul/Library/Mobile Documents/com~apple~CloudDocs/_Inbox', workDir: '/Users/paul/dev/cloudtidy', logDir: '/Users/paul/Library/Logs/cloudtidy', intervalSec: 600 })).toBe(EXPECTED_PLIST);
+ expect(renderPlist({ bun: '/Users/paul/.bun/bin/bun', script: '/Users/paul/dev/cloudtidy/src/cli.ts', configPath: '/Users/paul/dev/cloudtidy/config/default.config.json', inbox: '/Users/paul/Library/Mobile Documents/com~apple~CloudDocs/_Inbox', workDir: '/Users/paul/dev/cloudtidy', logDir: '/Users/paul/Library/Logs/cloudtidy', intervalSec: 120 })).toBe(EXPECTED_PLIST);
 });
 test('plist escapes XML and uses absolute paths only; never enables apply on its own', () => {
  const p = renderPlist({ ...plistInput(config, 'config/default.config.json', '/a&b/<x>/_Inbox') });
@@ -127,7 +127,7 @@ test('personal Tier-1 rules: single match is definite, conflicts and unknown doc
  for (const t of ['Reisepass Nr. P1234567', 'Personalausweis', 'Arztbrief Dr. Muster', 'Meine e-card', 'Flugticket VIE-LHR', 'Boarding Pass OS 871', 'Führerschein Klasse B']) expect(heuristics('scan.pdf', t, config)?.id).toBe('personal');
  expect(heuristics('Arztbrief.pdf', 'Versicherung Polizze', config)).toBeNull(); // conflict with contracts -> model
  expect(heuristics('x.txt', 'Flugticket Rechnung IBAN', config)).toBeNull();
- expect(heuristics('x.txt', 'Befunde und Sozialversicherung', config)?.id).toBe('contracts'); // not a personal word; only the contracts word matches
+ expect(heuristics('x.txt', 'Befunde und Sozialversicherung', config)).toBeNull(); // Sozialversicherung is excluded from the contracts rule (statutory, not a contract); Befunde is not a personal word either
  expect(heuristics('x.txt', 'Steuerbescheid 2025', config)?.id).toBe('admin');
  expect(heuristics('x.txt', 'Gesprächsnotiz ohne Signalwort', config)).toBeNull(); // anything else is left to the model / review
 });
@@ -197,8 +197,8 @@ test('CLI: help, usage errors and read-only commands', async () => {
   const cl = await runCli(['classify', join(sb.inbox, 'sheet.txt'), '--config', cfg]); expect(JSON.parse(cl.out)).toMatchObject({ route: 'uni', tier: 'rule' });
   const applied = await runCli(['run', '--apply', '--config', cfg]); expect(applied.out).toContain('APPLY'); expect(await readdir(join(sb.root, '01_Uni'))).toEqual(['sheet.txt']);
   expect((await runCli(['history', '--config', cfg])).out).toContain('01_Uni/sheet.txt');
-  const prev = await runCli(['undo', '--last', '--config', cfg]); expect(prev.out).toContain('would_restore'); expect(await readdir(sb.inbox)).toEqual([]);
-  const undo = await runCli(['undo', '--last', '--apply', '--config', cfg]); expect(undo.out).toContain('restored'); expect(await readdir(sb.inbox)).toEqual(['sheet.txt']);
+  const prev = await runCli(['undo', '--last', '--config', cfg]); expect(prev.out).toContain('would_restore'); expect(await inboxFiles(sb)).toEqual([]);
+  const undo = await runCli(['undo', '--last', '--apply', '--config', cfg]); expect(undo.out).toContain('restored'); expect(await inboxFiles(sb)).toEqual(['sheet.txt']);
   const dr = await runCli(['doctor', '--config', cfg]); expect(dr.code).toBe(1); expect(dr.out).toContain('exclusive no-clobber rename');
  } finally { await sb.cleanup(); }
 });
@@ -226,7 +226,7 @@ test('CLI: init previews by default, --yes creates only what is missing, and ref
   const { rm } = await import('node:fs/promises'); await rm(join(sb.root, '04_Persönlich'), { recursive: true });
   const cfg = await cfgFor(sb), before = await tree(sb.root);
   const prev = await runCli(['init', '--config', cfg]); expect(prev.code).toBe(0); expect(prev.out).toContain('would create'); expect(prev.out).toContain('04_Persönlich'); expect(await tree(sb.root)).toEqual(before);
-  const done = await runCli(['init', '--yes', '--config', cfg]); expect(done.code).toBe(0); expect(done.out).toContain('Created 3 folder');
+  const done = await runCli(['init', '--yes', '--config', cfg]); expect(done.code).toBe(0); expect(done.out).toContain('Created 1 folder');
   expect(await readdir(join(sb.root, '04_Persönlich'))).toEqual([]); expect((await runCli(['init', '--config', cfg])).out).toContain('Nothing to create');
   const strict = await cfgFor(sb, { allowNonICloudRoot: false }); await rm(join(sb.root, '04_Persönlich'), { recursive: true });
   const refused = await runCli(['init', '--yes', '--config', strict]); expect(refused.code).toBe(1); expect(refused.err).toContain('not under'); expect(await readdir(sb.root)).not.toContain('04_Persönlich');

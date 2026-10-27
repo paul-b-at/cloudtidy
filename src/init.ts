@@ -1,14 +1,14 @@
 import { lstat, mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
-import { INBOX, safeName, type Config } from './config';
+import { INBOX, REVIEW, safeName, type Config } from './config';
 import { assertApplyAllowed, key, protectedName, type Layout } from './paths';
 
 export interface InitStep { path: string; action: 'create' | 'exists' | 'problem'; detail?: string }
 export interface InitPlan { steps: InitStep[]; create: number; problems: number }
-/** Every directory cloudtidy expects: `_Inbox`, each route's bucket and the configured sub-folders (all prefixes), deduplicated. */
+/** Every directory cloudtidy expects: `_Inbox`, `_Inbox/Needs_Review`, each route's bucket and the configured sub-folders (all prefixes), deduplicated. Only `init --yes` ever creates them. */
 export function taxonomy(config: Config): string[] {
  const seen = new Map<string, string>(), add = (p: string) => { if (!seen.has(key(p))) seen.set(key(p), p); };
- add(INBOX);
+ add(INBOX); add(`${INBOX}/${REVIEW}`);
  for (const r of config.routes) { const parts = r.folder.split('/'); for (let i = 1; i <= parts.length; i++) add(parts.slice(0, i).join('/')); }
  return [...seen.values()];
 }

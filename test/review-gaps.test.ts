@@ -3,7 +3,7 @@ import { test, expect } from 'bun:test';
 import { mkdir, writeFile, readFile, readdir, utimes, stat, lstat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 const CLI = resolve(import.meta.dir, '../src/cli.ts');
-import { sandbox, baseJson } from './helpers';
+import { sandbox, baseJson, inboxFiles } from './helpers';
 import { validateConfig } from '../src/config';
 import { moveNoClobber } from '../src/mover';
 import { exclusiveRenameSupported, fingerprint, sha256File } from '../src/fsx';
@@ -55,7 +55,7 @@ test('gap: same-size, same-mtime, same-inode content change after classification
   await writeFile(p.src, 'HELLO'); await utimes(p.src, 1_700_000_000, 1_700_000_000); // in-place edit + mtime restored
   expect(await fingerprint(p.src)).toEqual(p.snapshot); // fingerprint cannot see it
   expect(await moveNoClobber(req(sb, p, join(sb.root, '01_Uni')))).toEqual({ kind: 'refused', reason: 'source_changed' });
-  expect(await readdir(sb.inbox)).toEqual(['a.txt']);
+  expect(await inboxFiles(sb)).toEqual(['a.txt']);
  } finally { await sb.cleanup(); }
 });
 
@@ -70,7 +70,7 @@ test('gap: same-size but different-content file at the destination is NOT a dupl
 
 test('gap: sources below _Inbox (e.g. in Needs_Review) are refused by the mover', async () => {
  const sb = await sandbox(); try {
-  await mkdir(sb.review);
+  await mkdir(sb.review, { recursive: true });
   const p = await prepared(sb, 'a.txt', 'hello', sb.review);
   expect(await moveNoClobber(req(sb, p, join(sb.root, '01_Uni')))).toEqual({ kind: 'refused', reason: 'source_unsafe' });
   expect(await readFile(p.src, 'utf8')).toBe('hello');
@@ -85,7 +85,7 @@ test('gap: tampered history - valid original path but destination OUTSIDE the ro
   await appendHistory(f, rec({ id: 'evil1', runId: 'evil1', source: join(sb.inbox, 'pulled.txt'), destination: victim, sha256: await sha256File(victim) }));
   const r = await undoMoves(sb.config, layout, f, { runId: 'evil1' }, { apply: true, undoRunId: newRunId() });
   expect(r.map(i => i.status)).toEqual(['skipped_unsafe']);
-  expect(await readFile(victim, 'utf8')).toBe('victim'); expect(await readdir(sb.inbox)).toEqual([]);
+  expect(await readFile(victim, 'utf8')).toBe('victim'); expect(await inboxFiles(sb)).toEqual([]);
  } finally { await sb.cleanup(); }
 });
 test('gap: tampered history - valid destination but original path in an unexpected place (Needs_Review / nested bucket) is refused', async () => {

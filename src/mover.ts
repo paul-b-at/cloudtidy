@@ -2,7 +2,7 @@ import { lstat, realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { type Config } from './config';
 import { exclusiveRename, fingerprint, sameFingerprint, sha256File, type Fingerprint, type RenameOptions } from './fsx';
-import { assertDestDir, assertDestFile, assertSource, key, UnsafePathError, type Layout, type SourceKind } from './paths';
+import { assertDestDir, assertDestFile, FOLDER_MISSING, assertSource, key, UnsafePathError, type Layout, type SourceKind } from './paths';
 import { splitName } from './naming';
 import { HistoryWriteError, type MoveJournal } from './history';
 
@@ -16,11 +16,11 @@ export interface MoveRequest {
  /** Write-ahead journal: an `intent` is fsynced before every rename and a `commit` after it (see history.ts). */
  journal?: MoveJournal;
 }
-export type RefusalReason = 'exdev' | 'destination_unsafe' | 'source_unsafe' | 'source_changed' | 'source_missing' | 'name_exhausted' | 'rename_failed' | 'atomic_rename_unavailable' | 'bucket_missing';
+export type RefusalReason = 'exdev' | 'destination_unsafe' | 'source_unsafe' | 'source_changed' | 'source_missing' | 'name_exhausted' | 'rename_failed' | 'atomic_rename_unavailable' | 'folder_missing' | 'rollback_failed';
 export type MoveOutcome =
  | { kind: 'moved'; to: string; suffixed: boolean }
  | { kind: 'duplicate'; existing: string }
- | { kind: 'refused'; reason: RefusalReason };
+ | { kind: 'refused'; reason: RefusalReason; /** `folder_missing:<relative path>` */ detail?: string };
 /** `Rechnung.pdf`, 2 -> `Rechnung (2).pdf` (deterministic collision suffix). */
 export function withCounter(name: string, n: number): string {
  if (n <= 1) return name;
@@ -31,7 +31,7 @@ const MAX_SUFFIX = 99;
 /**
  * The only function that moves user files. Never overwrites, never deletes, never copies:
  * 1. re-validate the source immediately before the move (still a plain file, same dev/ino/size/mtime, same sha256);
- * 2. re-validate the destination directory (configured bucket / Needs_Review, no symlink components, no protected names);
+ * 2. re-validate the destination directory (configured bucket / Needs_Review, no symlink components, no protected names; it must already exist, nothing is created);
  * 3. refuse cross-volume moves (EXDEV) instead of copy+delete;
  * 4. exclusive rename to the first free `name`, `name (2)`, ...; identical content already there => duplicate (caller sends it to review).
  */
@@ -44,7 +44,7 @@ export async function moveNoClobber(req: MoveRequest): Promise<MoveOutcome> {
  if ((await sha256File(req.src)) !== req.sha256) return { kind: 'refused', reason: 'source_changed' };
  const afterHash = await fingerprint(req.src);
  if (!afterHash || !sameFingerprint(afterHash, req.snapshot)) return { kind: 'refused', reason: 'source_changed' };
- try { await assertDestDir(layout, config, req.destDir, true); } catch (e) { if (e instanceof UnsafePathError) return { kind: 'refused', reason: e.reason === 'bucket_missing' ? 'bucket_missing' : 'destination_unsafe' }; throw e; }
+ try { await assertDestDir(layout, config, req.destDir); } catch (e) { if (e instanceof UnsafePathError) return e.reason.startsWith(FOLDER_MISSING) ? { kind: 'refused', reason: 'folder_missing', detail: e.reason } : { kind: 'refused', reason: 'destination_unsafe' }; throw e; }
  if ((await (req.deviceOf ? req.deviceOf(req.destDir) : stat(req.destDir).then(x => x.dev))) !== req.snapshot.dev) return { kind: 'refused', reason: 'exdev' };
  let races = 0;
  for (let n = 1; n <= MAX_SUFFIX; n++) {
@@ -60,8 +60,16 @@ export async function moveNoClobber(req: MoveRequest): Promise<MoveOutcome> {
   const intent = await req.journal?.intent(candidate); // throws HistoryWriteError before anything moved
   const undo = async (reason: RefusalReason, why: string): Promise<MoveOutcome> => {
    const back = await exclusiveRename(candidate, req.src, req.rename);
-   if (intent) await req.journal!.abort(intent, back === 'ok' ? `rolled_back:${why}` : `rollback_failed:${why}`);
-   return { kind: 'refused', reason: back === 'ok' ? reason : 'rename_failed' };
+   if (intent) {
+    if (back === 'ok') await req.journal!.abort(intent, `rolled_back:${why}`);
+    else {
+     // Rollback impossible (the source name is taken again): the file now sits in the destination, so it must be journaled and stay visible/undoable (undo re-checks the hash).
+     // If even that fails the intent stays dangling for the next run's recovery, and the run stops (HistoryWriteError): an unjournaled file is never ignored.
+     try { await req.journal!.commit(intent); }
+     catch (e) { throw new HistoryWriteError(`rollback failed and the move could not be journaled (${(e as Error).message}); ${candidate} is reconciled on the next run`, false); }
+    }
+   }
+   return { kind: 'refused', reason: back === 'ok' ? reason : 'rollback_failed' };
   };
   const result = await exclusiveRename(req.src, candidate, req.rename);
   if (result !== 'ok' && intent) await req.journal!.abort(intent, `rename:${result}`);

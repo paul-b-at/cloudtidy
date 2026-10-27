@@ -9,7 +9,7 @@ import { type RenameOptions } from './fsx';
 import { HistoryWriteError, newRunId, reconcileIntents, type Reconciled } from './history';
 import { listCandidates, waitForStable, type Skipped } from './ingest';
 import { acquireLock } from './lock';
-import { log } from './log';
+import { log, rotateLogs } from './log';
 import { notify } from './notify';
 import { PendingStore, type PendingEntry } from './pending';
 import { assertApplyAllowed, resolveLayout, type SourceKind } from './paths';
@@ -55,6 +55,7 @@ export async function runOnce(config: Config, o: RunOptions): Promise<RunReport>
  const report: RunReport = { runId: newRunId(), mode: apply ? 'apply' : 'dry-run', context: process.env.CLOUDTIDY_CONTEXT === 'launchd' || o.daemon ? 'launchd' : 'interactive', items: [], skipped: [], counts: {}, model: null, locked: false, aborted: false, inboxReadable: true, recovered: { recovered: 0, aborted: 0 } };
  const files = stateFiles(config), layout = await resolveLayout(config);
  if (apply) await assertApplyAllowed(layout, config); // never move files outside iCloud Drive unless the config says so explicitly
+ if (!o.readOnly) await rotateLogs(config.logDir); // launchd stdout/stderr files: 5 MB x 3
  const lock = o.readOnly ? null : (await ensureStateDir(config), await acquireLock(files.lock, { waitMs: config.lockWaitMs }));
  if (!o.readOnly && !lock) { report.locked = true; log('another cloudtidy process holds the lock; skipping this trigger'); return report; }
  let pending: PendingStore | null = null, held: HeldStore | null = null;
@@ -84,16 +85,19 @@ export async function runOnce(config: Config, o: RunOptions): Promise<RunReport>
   }
   const cache = o.useCache === false || o.readOnly ? null : await DecisionCache.load(files.cache, await configFingerprint(config));
   held = await HeldStore.load(files.held);
-  const { planned } = await plan(ready, config, { cache, held: o.useCache === false ? null : held, extract: o.extract, model: o.model, sleep: o.sleep, pending, modelAvailable: !!report.model?.available });
+  if (!o.readOnly) await held.save().catch(() => {}); // persists the cleanup when invalid entries were dropped (no-op otherwise)
+  const { planned } = await plan(ready, config, { cache, held: o.useCache === false ? null : held, extract: o.extract, model: o.model, sleep: o.sleep, pending, modelAvailable: !!report.model?.available, apply });
   await cache?.save();
-  if (o.useCache === false && !o.readOnly) { for (const p of planned) held.release(p.sha256, p.name); await held.save(); } // --no-cache releases undo holds for the files it re-examines
-  const preview = [...planned.map(plannedItem), ...pendItems];
+  if (o.useCache === false && apply) { for (const p of planned) held.release(p.sha256, p.name); await held.save(); } // --no-cache --apply releases undo holds for the files it re-examines (a preview must not)
+  // Sweep sources are loose files in the iCloud root, not in _Inbox: a file that stays put must not claim an _Inbox destination.
+  const stays = (i: Item): Item => kind === 'root' && i.destination === `${INBOX}/${i.file}` ? { ...i, destination: i.file } : i;
+  const preview = [...planned.map(plannedItem), ...pendItems].map(stays);
   if (o.confirm && !(await o.confirm(preview))) { report.items = preview; report.aborted = true; report.counts = tally(preview, report.skipped); return report; }
   if (!apply) report.items = preview;
   else {
    const ctx = { layout, config, kind, runId: report.runId, mode: o.mode ?? 'run', historyFile: files.history, rename: o.rename, deviceOf: o.deviceOf };
    for (const p of planned as Planned[]) {
-    try { report.items.push(await applyOne(ctx, p)); }
+    try { const item = await applyOne(ctx, p); report.items.push(item); if (item.outcome === 'error') log(`error: ${item.file}: ${item.detail ?? item.reason}`); }
     catch (e) {
      report.items.push({ ...plannedItem(p), outcome: 'error', detail: 'history_or_io_error' });
      if (e instanceof HistoryWriteError) { log(`aborting run: ${e.message}`); break; } // history not writable: stop moving
@@ -102,6 +106,7 @@ export async function runOnce(config: Config, o: RunOptions): Promise<RunReport>
    }
    report.items.push(...pendItems);
   }
+  report.items = report.items.map(stays);
   report.counts = tally(report.items, report.skipped);
   return report;
  } finally {

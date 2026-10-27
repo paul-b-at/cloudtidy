@@ -28,9 +28,10 @@ Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR ex
 - Realpath containment, symlink-component rejection, blocklist (`_Archiv`, app containers, `~` names).
 - Atomic no-clobber same-volume moves (exclusive rename via `bun:ffi`), `(n)` suffixes, duplicate → review, EXDEV → review (never copy+delete); source revalidation before the move.
 - Append-only audit history with a write-ahead journal (fsync'd intent/commit/abort + crash reconciliation) and hash-verified `undo` (preview by default); undo holds in their own store.
-- Never creates top-level buckets while moving (`bucket_missing` → review); `init` creates the taxonomy explicitly. Apply modes only run inside iCloud Drive unless `allowNonICloudRoot`.
+- The mover never creates ANY folder (bucket, sub-folder or `_Inbox/Needs_Review`): a missing destination → review with `folder_missing:<relative path>`; a missing `Needs_Review` → the file stays in `_Inbox` and the run reports an error. `init [--yes]` creates the full taxonomy; `doctor` checks all of it. Apply modes only run inside iCloud Drive unless `allowNonICloudRoot`.
 - Deterministic naming first (labelled issue date, known senders); the model only fills missing date/sender with the route locked, and its values are used only when found in the text (protocol v2: the model never supplies a name).
-- Transient model failures defer files in `_Inbox` as pending (backoff, `model.maxDeferHours` → review); definite failures review immediately.
+- Transient model failures defer files in `_Inbox` as pending (backoff 5–60 min). Review only after `model.maxDeferHours` since the first **apply-mode** attempt, ≥ 3 apply-mode attempts and a final failed attempt in the current run (dry-runs never start the clock); a per-run circuit breaker limits the cost of a hung model. Definite failures review immediately with their specific reason (`model_refusal`, `model_guardrail`, `model_unsupported_language`, `model_context_overflow`, `model_invalid_output`, …), except on a rule hit: the rule's route and the original name are kept and the naming reason is recorded.
+- State files are validated entry by entry (`pending.json`, `held.json`, cache); a failed rollback is journaled (never an unjournaled file); logs from launchd are rotated by size (5 MB × 3).
 - `run`, `review`, `history`, `undo`, `sweep` (preview + explicit confirmation; never from the daemon).
 
 ## Increment 4 — daemon and polish (implemented, pending Mac verification)
@@ -59,8 +60,10 @@ Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR ex
 - Patterns match whole words (Unicode aware) instead of free substrings, so `Betrag` no longer fires on `Bankbetrag`; German compounds that should match are listed explicitly.
 - A rule hit is final and instant (no model check of the route). Notion's "model must confirm" step is replaced by "exactly one route matches"; the cost is that hidden document text can steer a rule route (accepted risk, documented).
 - Invoice/contract naming does not need the model when the labelled date and a known sender are in the text; the model is only asked for what is missing (route locked). A rule hit is therefore instant for routing; naming latency is reported separately by `eval`.
-- Files are never put into `Needs_Review` just because the model is temporarily unavailable: they wait in `_Inbox` as pending and are only reviewed after `model.maxDeferHours` (24 h).
-- cloudtidy does not create top-level buckets while moving (`bucket_missing` → review); `cloudtidy init` creates the taxonomy explicitly, after iCloud has synced.
+- Files are never put into `Needs_Review` just because the model is temporarily unavailable: they wait in `_Inbox` as pending and are only reviewed after `model.maxDeferHours` (24 h) of *apply-mode* attempts, at least 3 of them, and one more failed attempt (see README step 7).
+- cloudtidy does not create any folder while moving (`folder_missing:<path>` → review); `cloudtidy init` creates the taxonomy (buckets, sub-folders, `_Inbox/Needs_Review`) explicitly, after iCloud has synced. Notion's "sub-folders `Rechnungen/`, `Verträge/` are created" is therefore done by `init`, not on demand.
+- Defaults `daemon.intervalSec: 120` and `stabilityRetries: 2` (shared window) replace the original 600 s / 0 so that "sorted within seconds" holds for files that are still being written and leftover waits stay about two minutes.
+- The `Sozialversicherung…` compound is excluded from the contracts rule; senders that are only stop-words (`Die`, `Re`, `An`, `Sehr`, …) never count.
 - `undo` previews unless `--apply`.
 - Route IDs (`uni`, `invoices`, `contracts`, `admin`, `dev`, `personal`) replace the Notion JSON's category/subcategory pair; each ID maps to one configured folder.
 - Notifications are single-file (`Sorted invoice into 02_Admin & Finanzen`) or batched counts (`Sorted 2 files (01_Uni 1, 02_Admin & Finanzen 1) · 1 to Needs_Review`); never filenames.
@@ -68,7 +71,7 @@ Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR ex
 
 ## Accepted and documented residual risks
 
-F-08 directory-component TOCTOU (no `openat` in Bun); F-16 steerable rules (a rule hit is final); F-24 `daemon.apply` on one Mac only; F-01 iCloud's `RENAME_EXCL` support can only be proven by `doctor` on the Mac; stale-lock takeover; the transient `.cloudtidy-probe-*` folder in `_Inbox` while `doctor` runs; TCC/Full Disk Access is per bun path.
+F-08 directory-component TOCTOU (no `openat` in Bun); F-16 steerable rules (a rule hit is final); F-24 `daemon.apply` on one Mac only; F-01 iCloud's `RENAME_EXCL` support can only be proven by `doctor` on the Mac; stale-lock takeover; the transient `.cloudtidy-probe-*` folder in `_Inbox` while `doctor` runs; TCC/Full Disk Access is per bun path (with Homebrew the resolved Cellar binary, so `brew upgrade bun` can drop the grant); macOS 14+ dataless files under their real name are not detected (Mac-only, F-07).
 
 ## Acceptance gate
 

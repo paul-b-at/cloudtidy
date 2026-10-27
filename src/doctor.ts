@@ -9,7 +9,8 @@ import { agentState, installedPlist, isVersionedBunPath, type Exec, realExec } f
 import { INBOX } from './config';
 import { isICloudRoot, resolveLayout, type Layout } from './paths';
 import { taxonomy } from './init';
-import { readStatus } from './state';
+import { readStatus, stateFiles } from './state';
+import { pendingIntents, readRawHistory } from './history';
 
 export interface Check { name: string; ok: boolean; required: boolean; detail: string }
 const ok = (p: string, mode: number) => access(p, mode).then(() => true, () => false);
@@ -17,17 +18,17 @@ const ok = (p: string, mode: number) => access(p, mode).then(() => true, () => f
  * No-clobber rename probe on the volume that really matters: a dot-prefixed probe folder inside `_Inbox` (same volume/filesystem as the
  * files that get moved; iCloud may not support RENAME_EXCL the way a temp dir does). Creates and removes only its own files.
  */
-export async function probeExclusiveRename(layout: Layout, opts: RenameOptions = {}): Promise<{ ok: boolean; detail: string }> {
+export async function probeExclusiveRename(layout: Layout, opts: RenameOptions = {}): Promise<{ ok: boolean; detail: string; native?: boolean }> {
  const dir = join(layout.inbox, `.cloudtidy-probe-${process.pid}-${Math.random().toString(36).slice(2, 8)}`), a = join(dir, 'a'), b = join(dir, 'b'), c = join(dir, 'c');
  let made = false;
  try {
   await mkdir(dir); made = true;
   await writeFile(a, '1'); await writeFile(b, '2');
-  const clash = await exclusiveRename(a, b, opts);
+  let backend = 'native'; const clash = await exclusiveRename(a, b, { ...opts, onBackend: x => { backend = x; opts.onBackend?.(x); } });
   if (clash !== 'exists') return { ok: false, detail: `RENAME_EXCL not enforced on ${layout.inbox}'s volume (result: ${clash})` };
   const free = await exclusiveRename(a, c, opts);
   if (free !== 'ok') return { ok: false, detail: `exclusive rename into a free name failed (${free})` };
-  return { ok: true, detail: `${exclusiveRenameSupported() ? 'OS-level (renamex_np / renameat2)' : 'unavailable'} verified in ${INBOX}` };
+  return { ok: true, native: backend === 'native', detail: backend === 'native' ? `OS-level (renamex_np / renameat2) verified in ${INBOX}` : `WARNING: the NON-ATOMIC lstat+rename fallback is active (CLOUDTIDY_ALLOW_NONATOMIC_RENAME=1); OS-level exclusive rename is NOT verified, a race can overwrite a file. Unset the variable and fix the cause` };
  } catch (e) { return { ok: false, detail: `probe failed: ${(e as NodeJS.ErrnoException).code ?? 'error'} (cannot write to ${INBOX}?)` }; }
  finally { if (made) { for (const f of [a, b, c]) await rm(f, { force: true }).catch(() => {}); await rmdir(dir).catch(() => {}); } }
 }
@@ -36,6 +37,9 @@ export async function doctor(config: Config, exec: Exec = realExec): Promise<Che
  const checks: Check[] = [], add = (name: string, pass: boolean, required: boolean, detail: string) => checks.push({ name, ok: pass, required, detail });
  const darwin = process.platform === 'darwin', major = Number.parseInt(release(), 10);
  add('macOS 26+', darwin && major >= 25, true, darwin ? `Darwin ${release()}` : `not macOS (${process.platform})`);
+ // Apple Foundation Models need Apple silicon, and a bun running under Rosetta (x64) is a different binary for Full Disk Access / the helper's model access.
+ const translated = darwin ? (await exec(['/usr/sbin/sysctl', '-n', 'sysctl.proc_translated']).catch(() => ({ code: 1, output: '' }))).output.trim() === '1' : false;
+ add('native Apple silicon (arm64, not Rosetta)', process.arch === 'arm64' && !translated, true, `${process.arch}${translated ? ', running under Rosetta: install the arm64 bun (https://bun.sh) and re-run install' : ''}`);
  add('classifier helper built', await ok(config.classifier, constants.X_OK), true, config.classifier);
  const model = await checkModel(config);
  add('Apple Foundation Model available', model.available, true, model.reason);
@@ -49,11 +53,11 @@ export async function doctor(config: Config, exec: Exec = realExec): Promise<Che
   const icloud = await isICloudRoot(layout);
   add('root is iCloud Drive', icloud || config.allowNonICloudRoot, false, icloud ? layout.root : `${layout.root} is not under ~/Library/Mobile Documents/com~apple~CloudDocs: apply modes will refuse${config.allowNonICloudRoot ? ' (allowNonICloudRoot is true)' : ''}`);
   const missing: string[] = [];
-  for (const rel of taxonomy(config).filter(t => !t.includes('/'))) if (!(await lstat(join(layout.root, rel)).then(s => s.isDirectory() && !s.isSymbolicLink(), () => false))) missing.push(rel);
-  add('top-level folders exist', missing.length === 0, true, missing.length ? `missing: ${missing.join(', ')}. cloudtidy never creates them while moving; run "init" after iCloud has fully synced` : 'all buckets and _Inbox present');
+  for (const rel of taxonomy(config)) if (!(await lstat(join(layout.root, rel)).then(s => s.isDirectory() && !s.isSymbolicLink(), () => false))) missing.push(rel);
+  add('taxonomy folders exist (buckets, sub-folders, Needs_Review)', missing.length === 0, true, missing.length ? `missing: ${missing.join(', ')}. cloudtidy never creates folders while moving (files whose folder is missing go to review, or stay put if Needs_Review is missing); run "init" after iCloud has fully synced` : `all ${taxonomy(config).length} folders present`);
  }
  const probe = inboxOk && layout ? await probeExclusiveRename(layout) : { ok: false, detail: `needs a readable ${INBOX} on the real volume` };
- add('exclusive no-clobber rename (on the iCloud volume)', probe.ok, true, probe.ok ? probe.detail : `${probe.detail}; cloudtidy refuses to move files (non-atomic fallback needs CLOUDTIDY_ALLOW_NONATOMIC_RENAME=1)`);
+ add('exclusive no-clobber rename (on the iCloud volume)', probe.ok && probe.native !== false, true, probe.ok ? probe.detail : `${probe.detail}; cloudtidy refuses to move files (non-atomic fallback needs CLOUDTIDY_ALLOW_NONATOMIC_RENAME=1)`);
  let dir = config.stateDir; while (!(await ok(dir, constants.F_OK)) && dirname(dir) !== dir) dir = dirname(dir);
  add('state dir writable', await ok(dir, constants.W_OK), true, config.stateDir);
  const agent = await agentState(exec), plist = agent.installed ? await installedPlist() : null;
@@ -64,8 +68,11 @@ export async function doctor(config: Config, exec: Exec = realExec): Promise<Che
   add('LaunchAgent bun path is stable', bunOk, false, bunOk ? plist.bun! : `${plist.bun ?? 'missing'} is versioned or no longer exists (brew upgrade?). Re-run: install  (Full Disk Access is granted per binary path)`);
   if (plist.pdftotext) add('LaunchAgent pdftotext path exists', await ok(plist.pdftotext, constants.X_OK), false, plist.pdftotext);
  }
+ const dangling = await readRawHistory(stateFiles(config).history).then(r => pendingIntents(r).length, () => -1);
+ add('history journal has no unresolved moves', dangling === 0, false, dangling === 0 ? 'clean' : dangling > 0 ? `${dangling} move(s) with a write-ahead intent but no commit/abort (a crash or a failed rollback): the next apply run reconciles them; check "history" and the files` : 'history file unreadable');
  const st = await readStatus(config);
  if (st) {
+  add('last run: no file errors', !(st.counts?.errors), false, st.counts?.errors ? `${st.counts.errors} file(s) ended in an error (rollback_failed, folder_missing for Needs_Review, history/io): see the log and "review"/"history"` : 'none');
   add('last run: model reachable', !!st.model?.available, false, `${st.context} run at ${st.time}: ${st.model ? `${st.model.available ? 'available' : 'unavailable'} (${st.model.reason})` : 'not checked'}`);
   add('last run: _Inbox readable', st.inboxReadable, false, `${st.context} context`);
   const launchd = st.context === 'launchd';

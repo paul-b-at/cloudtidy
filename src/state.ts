@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { type Config } from './config';
 import { PROTOCOL_VERSION } from './classifier';
+import { log } from './log';
 
 export const stateFiles = (c: Config) => ({ dir: c.stateDir, lock: join(c.stateDir, 'run.lock'), history: join(c.stateDir, 'history.jsonl'), cache: join(c.stateDir, 'cache.json'), held: join(c.stateDir, 'held.json'), pending: join(c.stateDir, 'pending.json'), status: join(c.stateDir, 'status.json') });
 export const ensureStateDir = (c: Config) => mkdir(c.stateDir, { recursive: true, mode: 0o700 });
@@ -23,8 +24,14 @@ export async function configFingerprint(c: Config): Promise<string> {
  const helper = await stat(c.classifier).then(s => `${s.size}:${s.mtimeMs}`, () => 'none'), ocr = await stat(c.ocr).then(s => `${s.size}:${s.mtimeMs}`, () => 'none');
  return createHash('sha256').update(JSON.stringify([PROTOCOL_VERSION, c.routes, c.naming, c.blocklist, c.knownSenders, helper, ocr])).digest('hex').slice(0, 16);
 }
-export interface CacheEntry { route: string | null; name: string; tier: 'rule' | 'model' | 'none'; reason: string; needsReview: boolean; renamed: boolean; at: number }
-const MAX_ENTRIES = 5000;
+export interface CacheEntry { route: string | null; name: string; tier: 'rule' | 'model' | 'none'; reason: string; needsReview: boolean; renamed: boolean; note?: string; at: number }
+const MAX_ENTRIES = 5000, MAX_HELD = 20000;
+const validCacheEntry = (e: unknown): e is CacheEntry => {
+ if (!e || typeof e !== 'object' || Array.isArray(e)) return false;
+ const x = e as Record<string, unknown>;
+ return (x.route === null || typeof x.route === 'string') && typeof x.name === 'string' && x.name.length > 0 && x.name.length <= 255 && (x.tier === 'rule' || x.tier === 'model' || x.tier === 'none')
+  && typeof x.reason === 'string' && x.reason.length <= 120 && typeof x.needsReview === 'boolean' && typeof x.renamed === 'boolean' && (x.note === undefined || typeof x.note === 'string') && typeof x.at === 'number' && Number.isFinite(x.at);
+};
 /**
  * Content-hash cache: unchanged files (same sha256 + name + config fingerprint) are not re-classified on every trigger.
  * Only definitive decisions are cached; transient failures are tracked by the pending store instead. Least-recently-written entries
@@ -32,10 +39,15 @@ const MAX_ENTRIES = 5000;
  */
 export class DecisionCache {
  private dirty = false;
- constructor(private file: string | null, private fp: string, private entries: Record<string, CacheEntry>) {}
+ private entries: Record<string, CacheEntry>;
+ constructor(private file: string | null, private fp: string, entries: Record<string, CacheEntry>) { this.entries = Object.assign(Object.create(null), entries); }
  static async load(file: string | null, fp: string): Promise<DecisionCache> {
   const raw = file ? await readJson<{ fp: string; entries: Record<string, CacheEntry> }>(file) : null;
-  return new DecisionCache(file, fp, raw && raw.fp === fp && raw.entries && typeof raw.entries === 'object' ? raw.entries : {});
+  const ok: Record<string, CacheEntry> = Object.create(null);
+  if (raw && raw.fp === fp && raw.entries && typeof raw.entries === 'object' && !Array.isArray(raw.entries)) {
+   for (const [k, e] of Object.entries(raw.entries)) if (Object.keys(ok).length < MAX_ENTRIES && validCacheEntry(e)) ok[k] = e; // a damaged entry is simply re-classified
+  }
+  return new DecisionCache(file, fp, ok);
  }
  static key(sha256: string, name: string) { return `${sha256}:${name.normalize('NFC')}`; }
  get(sha256: string, name: string): CacheEntry | null { return this.entries[DecisionCache.key(sha256, name)] ?? null; }
@@ -53,10 +65,22 @@ export class DecisionCache {
  */
 export class HeldStore {
  private dirty = false;
- constructor(private file: string | null, private entries: Record<string, { at: number }>) {}
+ private entries: Record<string, { at: number }>;
+ /** Null-prototype map; every persisted entry is validated (a bad one is dropped with a warning, it can never wedge or release anything else). */
+ constructor(private file: string | null, entries: Record<string, { at: number }>) { this.entries = Object.assign(Object.create(null), entries); }
  static async load(file: string | null): Promise<HeldStore> {
   const raw = file ? await readJson<{ v: 1; entries: Record<string, { at: number }> }>(file) : null;
-  return new HeldStore(file, raw && raw.entries && typeof raw.entries === 'object' ? raw.entries : {});
+  const ok: Record<string, { at: number }> = Object.create(null); let dropped = 0;
+  if (raw && raw.entries && typeof raw.entries === 'object' && !Array.isArray(raw.entries)) {
+   for (const [k, e] of Object.entries(raw.entries)) {
+    if (Object.keys(ok).length < MAX_HELD && /^[0-9a-f]{64}:.{1,1024}$/su.test(k) && e && typeof e === 'object' && !Array.isArray(e) && typeof e.at === 'number' && Number.isFinite(e.at) && e.at >= 0 && e.at <= 4e12) ok[k] = { at: e.at };
+    else dropped++;
+   }
+  } else if (raw) dropped = 1;
+  if (dropped) log(`warning: ignored ${dropped} invalid entr${dropped === 1 ? 'y' : 'ies'} in held.json`);
+  const store = new HeldStore(file, ok);
+  if (dropped) store.dirty = true;
+  return store;
  }
  has(sha256: string, name: string) { return DecisionCache.key(sha256, name) in this.entries; }
  add(sha256: string, name: string) { this.entries[DecisionCache.key(sha256, name)] = { at: Date.now() }; this.dirty = true; }

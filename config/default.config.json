@@ -9,7 +9,7 @@
   "logDir": "~/Library/Logs/cloudtidy",
   "blocklist": [],
   "debounceMs": 3000,
-  "stabilityRetries": 0,
+  "stabilityRetries": 2,
   "emptyGraceMinutes": 10,
   "classifierRetries": 1,
   "lockWaitMs": 30000,
@@ -19,7 +19,7 @@
   "daemon": {
     "apply": false,
     "notify": true,
-    "intervalSec": 600
+    "intervalSec": 120
   },
   "model": {
     "maxDeferHours": 24
@@ -121,7 +121,7 @@
       "rename": true,
       "docType": "Vertrag",
       "patterns": [
-        "Vertrag(?:s\\p{L}*|e|en)?|(?:Miet|Kauf|Arbeits|Dienst|Werk)vertrag(?:s\\p{L}*)?|Polizzen?|\\p{L}*versicherung(?:s\\p{L}*)?"
+        "Vertrag(?:s\\p{L}*|e|en)?|(?:Miet|Kauf|Arbeits|Dienst|Werk)vertrag(?:s\\p{L}*)?|Polizzen?|\\p{L}*(?<!sozial)versicherung(?:s\\p{L}*)?"
       ]
     },
     {

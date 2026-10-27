@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdir, writeFile, readFile, symlink, readdir, stat, utimes } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, symlink, readdir, stat, utimes, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { exclusiveRename } from '../src/fsx';
@@ -8,7 +8,7 @@ import { moveNoClobber, withCounter } from '../src/mover';
 import { assertDestDir, assertSource, resolveLayout, UnsafePathError } from '../src/paths';
 import { listCandidates, waitForStable } from '../src/ingest';
 import { acquireLock, lockIsStale } from '../src/lock';
-import { sandbox, swapForSymlink } from './helpers';
+import { sandbox, swapForSymlink, inboxFiles } from './helpers';
 
 async function prepared(sb: Awaited<ReturnType<typeof sandbox>>, name = 'a.txt', body = 'hello') {
  const layout = await resolveLayout(sb.config);
@@ -33,7 +33,10 @@ test('_Archiv, app containers and ~ names are never writable (relative to the iC
   expect(layout.root).toContain('~'); // the root itself may contain ~, entries below it may not
   for (const rel of ['_Archiv/x', '_archiv', 'Pages/x', 'Keynote', 'Numbers/a', 'Obsidian', 'Goodnotes', 'Shortcuts', '01_Uni/Obsidian', '01_Uni/a~b', '01_Uni/_ARCHIV', '_Inbox/Pages', '01_Uni/com~apple~CloudDocs'])
    await expect(assertDestDir(layout, sb.config, join(layout.root, rel)), rel).rejects.toBeInstanceOf(UnsafePathError);
+  await expect(assertDestDir(layout, sb.config, join(layout.root, '01_Uni', 'Semester 1')), 'missing sub-folders are never created').rejects.toMatchObject({ reason: 'folder_missing:01_Uni/Semester 1' });
+  await mkdir(join(layout.root, '01_Uni', 'Semester 1'));
   await expect(assertDestDir(layout, sb.config, join(layout.root, '01_Uni', 'Semester 1'))).resolves.toBeString();
+  expect(await readdir(join(layout.root, '01_Uni'))).toEqual(['Semester 1']);
   await expect(assertDestDir(layout, sb.config, layout.review)).resolves.toBeString();
   const extra = { ...sb.config, blocklist: ['Secrets'] };
   await expect(assertDestDir(layout, extra, join(layout.root, '01_Uni', 'secrets'))).rejects.toBeInstanceOf(UnsafePathError);
@@ -53,7 +56,7 @@ test('symlink source is refused (inbox scan skips it, mover refuses it)', async 
   await writeFile(join(sb.dir, 'secret.txt'), 'secret');
   await symlink(join(sb.dir, 'secret.txt'), join(sb.inbox, 'link.txt'));
   const layout = await resolveLayout(sb.config);
-  expect((await listCandidates(layout, sb.config, 'inbox')).skipped).toEqual([{ name: 'link.txt', reason: 'symlink' }]);
+  expect((await listCandidates(layout, sb.config, 'inbox')).skipped).toEqual([{ name: 'Needs_Review', reason: 'directory' }, { name: 'link.txt', reason: 'symlink' }]);
   await expect(assertSource(layout, sb.config, join(sb.inbox, 'link.txt'), 'inbox')).rejects.toBeInstanceOf(UnsafePathError);
   const p = await prepared(sb);
   await Bun.write(p.src, 'hello'); // keep real file
@@ -77,7 +80,7 @@ test('symlink in a destination component is refused (bucket and sub-folder)', as
  const sb = await sandbox(); try {
   const outside = join(sb.dir, 'outside'); await mkdir(outside);
   await swapForSymlink(sb, '01_Uni', outside);
-  await mkdir(join(sb.root, '02_Admin & Finanzen'), { recursive: true }); await symlink(outside, join(sb.root, '02_Admin & Finanzen', 'Rechnungen'));
+  await rm(join(sb.root, '02_Admin & Finanzen', 'Rechnungen'), { recursive: true }); await symlink(outside, join(sb.root, '02_Admin & Finanzen', 'Rechnungen'));
   const p = await prepared(sb);
   expect(await moveNoClobber(req(sb, p, join(sb.root, '01_Uni')))).toEqual({ kind: 'refused', reason: 'destination_unsafe' });
   expect(await moveNoClobber(req(sb, p, join(sb.root, '02_Admin & Finanzen', 'Rechnungen')))).toEqual({ kind: 'refused', reason: 'destination_unsafe' });
@@ -105,7 +108,7 @@ for (const forceFallback of [false, true]) test(`no-clobber collision gets a det
   expect(await readFile(join(sb.root, '01_Uni', 'a.txt'), 'utf8')).toBe('existing');
   expect(await readFile(join(sb.root, '01_Uni', 'a (2).txt'), 'utf8')).toBe('existing2');
   expect(await readFile(join(sb.root, '01_Uni', 'a (3).txt'), 'utf8')).toBe('hello');
-  expect(await readdir(sb.inbox)).toEqual([]);
+  expect(await inboxFiles(sb)).toEqual([]);
  } finally { await sb.cleanup(); }
 });
 test('withCounter keeps the extension', () => { expect(withCounter('Rechnung.pdf', 1)).toBe('Rechnung.pdf'); expect(withCounter('Rechnung.pdf', 2)).toBe('Rechnung (2).pdf'); expect(withCounter('README', 3)).toBe('README (3)'); });
@@ -161,7 +164,7 @@ test('pre-move revalidation: file changed after classification is not moved', as
 test('.icloud placeholders, dotfiles, partial downloads and folders are skipped', async () => {
  const sb = await sandbox(); try {
   for (const n of ['.Rechnung.pdf.icloud', '.DS_Store', 'movie.mp4.crdownload', 'x.part', 'real.txt']) await writeFile(join(sb.inbox, n), 'x');
-  await mkdir(join(sb.inbox, 'Needs_Review'));
+  
   const c = await listCandidates(await resolveLayout(sb.config), sb.config, 'inbox');
   expect(c.files.map(f => f.name)).toEqual(['real.txt']);
   expect(c.skipped.find(s => s.name === '.Rechnung.pdf.icloud')?.reason).toBe('icloud_placeholder');

@@ -49,7 +49,10 @@ export function labelledDate(text: string): string | null {
   const found = new Set<string>();
   for (const m of text.matchAll(re)) {
    const end = (m.index ?? 0) + m[0].length;
-   const d = dates.find(x => x.index >= end && x.index - end <= 14 && /^[\s:.\-–—]*$/.test(text.slice(end, x.index)) && /\d{4}/.test(x.raw));
+   // `dates` is sorted by position: binary-search the first date after the label instead of scanning all of them (quadratic on date-heavy OCR text).
+   let lo = 0, hi = dates.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (dates[mid]!.index < end) lo = mid + 1; else hi = mid; }
+   let d: FoundDate | undefined;
+   for (let k = lo; k < dates.length && dates[k]!.index - end <= 14; k++) { const x = dates[k]!; if (/^[\s:.\-–—]*$/.test(text.slice(end, x.index)) && /\d{4}/.test(x.raw)) { d = x; break; } }
    if (d) found.add(d.iso);
   }
   if (found.size === 1) return [...found][0]!;
@@ -88,11 +91,16 @@ export function knownSenderMatches(text: string, config: Pick<Config, 'knownSend
  }
  return out;
 }
-/** A known sender found without any model: exactly one distinct configured sender in the text, else null (several => ambiguous). */
+/** A known sender found without any model: the canonical configured name when exactly one distinct sender is in the text, else null (several => ambiguous). */
 export function knownSenderIn(text: string, config: Pick<Config, 'knownSenders'>): string | null {
  const m = knownSenderMatches(text, config);
- return m.size === 1 ? senderLabel([...m][0]!) : null;
+ return m.size === 1 ? [...m][0]! : null; // canonical name, not the hyphenated label: validatedSender() re-checks it against the text and builds the label (a label like "Wien-Energie" never matches "Wien Energie")
 }
+/** Words that appear in almost every document but are never an issuing organisation (articles, pronouns, greetings, mail/letter headers, document words). A candidate made only of these is rejected unless it is a configured known sender. */
+const SENDER_STOPWORDS = new Set(`der die das den dem des ein eine einen einem einer eines und oder aber von vom zu zum zur an am im in auf aus bei mit nach nur für fuer über ueber unter als auch wir sie ich du er es ihr ihre ihren ihrem ihrer ihres uns unser unsere sehr geehrte geehrter geehrten herr frau hallo guten tag liebe lieber grüße gruesse gruß mfg
+re aw wg fw fwd betreff anrede absender empfänger empfaenger kunde kunden kundin firma seite datum rechnung rechnungen vertrag verträge vertraege betrag summe gesamt summen nummer nr anlage anhang kopie
+the a an and or of to from for with by on in at as is are this that these those you your we our they their he she it his her dear sir madam mr mrs ms hello hi regards sincerely subject re fw fwd cc bcc to sender recipient customer company page date invoice invoices contract contracts amount total number no attachment copy`.split(/\s+/));
+const onlyStopwords = (s: string) => { const words = s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean); return words.length === 0 || words.every(w => SENDER_STOPWORDS.has(w)); };
 /**
  * A suggested sender counts only if (a) the text contains it as a whole word (case-insensitive), and (b) it has at least 3
  * characters or is a configured known sender; or it is the canonical name of a known sender whose spelling appears in the text.
@@ -105,6 +113,7 @@ export function validatedSender(candidate: string | null, text: string, config: 
  const key = collapse(raw), known = config.knownSenders.find(k => [k.name, ...k.aliases].some(x => collapse(x) === key));
  if (known && knownSenderMatches(text, config).has(known.name)) return senderLabel(known.name);
  if (raw.length < 3 && !known) return null;
+ if (!known && onlyStopwords(raw)) return null; // `Die`, `Der`, `Re`, `An`, `Sehr`, `Dear` ... would pass the whole-word check in any document: a prompt-injected or confused model must not pick them
  if (!wordIn(raw, collapse(text))) return null;
  return senderLabel(raw);
 }

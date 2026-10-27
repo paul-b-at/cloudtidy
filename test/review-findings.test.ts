@@ -3,7 +3,7 @@ import { test, expect } from 'bun:test';
 import { mkdir, writeFile, readFile, readdir, symlink, rm, stat, appendFile, lstat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 const CLI = resolve(import.meta.dir, '../src/cli.ts');
-import { sandbox, model, baseJson } from './helpers';
+import { sandbox, model, baseJson, inboxFiles } from './helpers';
 import { runOnce } from '../src/run';
 import { moveNoClobber } from '../src/mover';
 import { exclusiveRename, exclusiveRenameSupported, fingerprint, sha256File } from '../src/fsx';
@@ -57,7 +57,7 @@ test('F-05 a file swapped in after verification must not be left in the bucket u
   const r = await moveNoClobber(req(sb, p, join(sb.root, '01_Uni'), 'a.txt', { deviceOf }));
   const inBucket = await exists(join(sb.root, '01_Uni', 'a.txt'));
   // today: r = refused/rename_failed AND the unverified file is already in 01_Uni (no history record is written for a refused result)
-  expect(r.kind === 'moved' || !inBucket).toBe(true);
+  expect(r.kind).toBe('refused'); expect(inBucket).toBe(false); // strengthened: accepting `moved` let a reverted inode check go unnoticed
  } finally { await sb.cleanup(); }
 });
 
@@ -66,12 +66,12 @@ test('F-06 cloudtidy never creates a missing top-level bucket in the iCloud root
  const sb = await sandbox(); try {
   await rm(join(sb.root, '01_Uni'), { recursive: true });
   const p = await prepared(sb);
-  expect(await moveNoClobber(req(sb, p, join(sb.root, '01_Uni')))).toEqual({ kind: 'refused', reason: 'bucket_missing' });
+  expect(await moveNoClobber(req(sb, p, join(sb.root, '01_Uni')))).toEqual({ kind: 'refused', reason: 'folder_missing', detail: 'folder_missing:01_Uni' });
   expect(await exists(join(sb.root, '01_Uni'))).toBe(false);
   // end to end: the run reviews the file, and still does not create the bucket
   await writeFile(join(sb.inbox, 'sheet.txt'), 'VO 123.456 exercise sheet');
   const r = await runOnce(sb.config, { apply: true, model: model() });
-  expect(r.items.find(i => i.file === 'sheet.txt')).toMatchObject({ outcome: 'review', reason: 'bucket_missing' });
+  expect(r.items.find(i => i.file === 'sheet.txt')).toMatchObject({ outcome: 'review', reason: 'folder_missing:01_Uni' });
   expect(await exists(join(sb.root, '01_Uni'))).toBe(false); expect(await readdir(sb.review)).toContain('sheet.txt');
  } finally { await sb.cleanup(); }
 });
@@ -163,7 +163,7 @@ test('F-18 the non-atomic lstat+rename fallback is never used implicitly (apply 
   const backends: string[] = [];
   const r = await runOnce(sb.config, { apply: true, model: model(), rename: { disableNative: true, onBackend: b => backends.push(b) } });
   expect(r.counts.moved).toBe(0); expect(backends).toEqual([]); // neither backend ran: nothing moved
-  expect(await readdir(sb.inbox)).toContain('sheet.txt'); expect(await readdir(join(sb.root, '01_Uni'))).toEqual([]);
+  expect(await inboxFiles(sb)).toContain('sheet.txt'); expect(await readdir(join(sb.root, '01_Uni'))).toEqual([]);
   // the doctor probe fails instead of reporting a green check
   const probe = await probeExclusiveRename(await resolveLayout(sb.config), { disableNative: true });
   expect(probe.ok).toBe(false);
