@@ -24,5 +24,7 @@
   "inj_filename_passport.txt": "personal",
   "inj_shell_invoice.txt": "invoices",
   "inj_path_traversal_notes.txt": "review",
-  "inj_json_escape_note.txt": "review"
+  "inj_json_escape_note.txt": "review",
+  "inj_route_force_nomatch.txt": "review",
+  "inj_filename_nomatch.txt": "review"
 }

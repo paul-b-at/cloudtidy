@@ -194,6 +194,7 @@ async function main() {
    out(`Run time budget: ${c.maxRunSeconds}s (checked before each file; one file takes at most ~${oneFileMaxSeconds(c)}s, so the lock is held for at most ~${worstCaseLockSeconds(c)}s${worstCaseLockSeconds(c) > c.daemon.intervalSec ? `, longer than the ${c.daemon.intervalSec}s interval: overlapping triggers are skipped` : ''})`);
    if (st) { out(`Last run: ${st.time} (${st.context}, ${st.mode}, run ${st.runId})`); out(`  model reachable in that context: ${st.model ? (st.model.available ? 'yes' : `NO (${st.model.reason})`) : 'not checked'};  ${INBOX} readable: ${st.inboxReadable ? 'yes' : 'NO'}`); out(`  counts: ${Object.entries(st.counts).map(([k, v]) => `${k}=${v}`).join(' ')}`); }
    else out('Last run: none recorded yet');
+   if (st?.budget?.hit) out(`  WARNING: the last ${st.budget.streak} run(s) in a row stopped at the ${c.maxRunSeconds}s time budget (${st.budget.left} file(s) left in the latest): more files than one run can handle, or a slow model`);
    const p = await pendingList(c); out(`Pending in ${INBOX}: ${p.length}${p.length ? ' (run "review" for details)' : ''}`);
    const h = await readHistory(f.history); out(`History: ${h.filter(r => r.type === 'move').length} moves, ${undoable(h).length} undoable   (${f.history})`);
    return;

@@ -15,7 +15,7 @@ export interface Route {
  patterns: string[];
 }
 /** A sender recognised deterministically in invoice/contract text (no model call). `aliases` are other spellings of the same organisation. */
-export interface KnownSender { name: string; aliases: string[] }
+export interface KnownSender { name: string; aliases: string[]; /** An ordinary word as well as a company (Drei, Magenta, Verbund, Allianz): only counts in the letterhead window or before a company suffix. */ commonWord?: boolean }
 export interface Config {
  version: 1;
  root: string;
@@ -79,10 +79,11 @@ function parseSenders(x: unknown): KnownSender[] {
  if (!Array.isArray(x) || x.length > 200) throw Error('Invalid configuration: "knownSenders" must be a list of at most 200 entries');
  return x.map(v => {
   if (!record(v) || typeof v.name !== 'string' || !SENDER_LABEL.test(v.name) || v.name.length < 2) throw Error('Invalid configuration: "knownSenders[].name" must be a 2-60 character name (letters, digits, space . & \' -) and an object with name/aliases only');
-  for (const k of Object.keys(v)) if (k !== 'name' && k !== 'aliases') throw Error(`Invalid configuration: unknown knownSenders key "${k}"`);
+  for (const k of Object.keys(v)) if (k !== 'name' && k !== 'aliases' && k !== 'commonWord') throw Error(`Invalid configuration: unknown knownSenders key "${k}"`);
   const aliases = v.aliases ?? [];
   if (!Array.isArray(aliases) || aliases.length > 8 || !aliases.every(a => typeof a === 'string' && SENDER_LABEL.test(a) && a.length >= 2)) throw Error('Invalid configuration: "knownSenders[].aliases" must be a list of at most 8 names of 2-60 characters (letters, digits, space . & \' -)');
-  return { name: v.name, aliases: aliases as string[] };
+  if (v.commonWord !== undefined && typeof v.commonWord !== 'boolean') throw Error('Invalid configuration: "knownSenders[].commonWord" must be true or false');
+  return { name: v.name, aliases: aliases as string[], ...(v.commonWord ? { commonWord: true } : {}) };
  });
 }
 export function validateConfig(x: unknown): Config {
