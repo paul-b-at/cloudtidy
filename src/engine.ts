@@ -9,7 +9,7 @@ import { moveNoClobber } from './mover';
 import { targetName } from './naming';
 import { assertDestDir, FOLDER_MISSING, UnsafePathError, type Layout, type SourceKind } from './paths';
 import { DecisionCache, HeldStore } from './state';
-import { MIN_APPLY_ATTEMPTS, type PendingEntry, type PendingStore } from './pending';
+import { BUSY_CAP, MIN_APPLY_ATTEMPTS, type PendingEntry, type PendingStore } from './pending';
 
 export interface Analysis {
  route: Route | null; tier: Tier; needsReview: boolean; reason: string;
@@ -69,10 +69,13 @@ export const plannedItem = (p: Planned): Item => p.analysis.held
 /** `apply`: this run may move files. Only apply-mode attempts count towards the give-up rule (pending.ts); dry-runs never expire a file. */
 export interface PlanDeps extends AnalyzeDeps { pending?: PendingStore | null; modelAvailable?: boolean; apply?: boolean; /** Run time budget: checked before STARTING each file. */ budget?: { ms: number; elapsed: () => number } }
 /** The retry/give-up schedule for a file that needs the model (see pending.ts). */
+/** Past the maxDeferHours limit and enough apply attempts made: the next due attempt is the final one. */
+const more0 = (e: PendingEntry, config: Config) => e.applySince !== undefined && (e.applyAttempts ?? 0) >= MIN_APPLY_ATTEMPTS && e.lastSeen - e.applySince >= config.model.maxDeferHours * 3_600_000;
 function deferDetail(config: Config, e: PendingEntry): string {
  const next = `next try ${new Date(e.next).toISOString().slice(11, 16)}Z`;
  const n = e.applyAttempts ?? 0;
  if (e.applySince === undefined) return `attempt ${e.attempts}; ${next}; the ${config.model.maxDeferHours} h limit starts with the first run that applies`;
+ if (e.reason === 'model_busy' && more0(e, config)) { const capH = Math.max(1, Math.round((e.applySince + BUSY_CAP * config.model.maxDeferHours * 3_600_000 - e.lastSeen) / 3_600_000)); return `attempt ${n}; ${next}; the model was busy at the final call, so the file stays pending; it goes to Needs_Review if the model is still busy after ~${capH} h, or when another attempt fails for any other reason`; }
  const leftMs = e.applySince + config.model.maxDeferHours * 3_600_000 - e.lastSeen, more = Math.max(0, MIN_APPLY_ATTEMPTS - n);
  const when = leftMs > 0 ? `after ~${Math.max(1, Math.round(leftMs / 3_600_000))} h${more ? ` and ${more} more attempt${more === 1 ? '' : 's'}` : ''}` : more ? `once ${more} more attempt${more === 1 ? ' has' : 's have'} been made (the ${config.model.maxDeferHours} h are over)` : 'at the next attempt';
  return `attempt ${n}; ${next}; goes to Needs_Review ${when}, only if the model still fails then`;
@@ -98,7 +101,7 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
   const add = (analysis: Analysis) => planned.push({ ...f, sha256: sha, analysis });
   if (f.snapshot.size === 0) { pend?.clear(f.name); add(reviewAnalysis(f.name, 'empty_file')); continue; } // grace period already elapsed (run.ts)
   const e = pend?.get(f.name), mine = e && e.kind === 'model' && e.sha256 === sha ? e : undefined;
-  if (pend && mine && !(deps.apply && pend.expired(mine, config)) && !pend.due(mine, !!deps.modelAvailable)) { // waiting for the backoff: no model call
+  if (pend && mine && !(deps.apply && pend.expired(mine, config) && mine.reason !== 'model_busy') && !pend.due(mine, !!deps.modelAvailable)) { // waiting for the backoff: no model call. An expired entry bypasses it (one final call), except after a `model_busy` final call: that keeps its backoff, otherwise it would be re-asked on every run and starve the files behind it
    add({ ...reviewAnalysis(f.name, mine.reason), needsReview: false, transient: true, detail: deferDetail(config, mine) });
    continue;
   }
@@ -111,7 +114,7 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
   if (a.transient && pend) {
    if (!skipped) { // an attempt = a real helper call OR any other transient failure that is the file's own (an OCR/pdftotext timeout): it backs off and may expire. Only the breaker's answer is not an attempt
     const ent = pend.touch(f.name, 'model', a.reason, { sha256: sha, attempt: true, apply: !!deps.apply });
-    a = wasExpired && a.reason !== 'model_busy' ? reviewAnalysis(f.name, `deferred_too_long:${a.reason}`) : { ...a, detail: deferDetail(config, ent) }; // `model_busy` on the final call says nothing about the file: it counts as an attempt but stays pending
+    a = wasExpired && (a.reason !== 'model_busy' || pend.hardExpired(ent, config)) ? reviewAnalysis(f.name, `deferred_too_long:${a.reason}`) : { ...a, detail: deferDetail(config, ent) }; // `model_busy` on the final call says nothing about the file: it counts as an attempt but stays pending (until BUSY_CAP x maxDeferHours, then review)
    } else { // answered by the open breaker: not an attempt (no applyAttempts, no applySince, no backoff growth); the file stays pending and is asked on the next due run
     const ent = pend.touch(f.name, 'model', a.reason, { sha256: sha, attempt: false, apply: !!deps.apply });
     a = { ...a, detail: skippedDetail(ent) };
@@ -128,10 +131,11 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
 export async function previewItem(layout: Layout, config: Config, p: Planned): Promise<Item> {
  const item = plannedItem(p), a = p.analysis;
  if (item.outcome !== 'planned') return item;
- const check = async (dir: string): Promise<string | null> => { try { await assertDestDir(layout, config, dir); return null; } catch (e) { if (e instanceof UnsafePathError) return e.reason; throw e; } };
+ const check = async (dir: string): Promise<string | null> => { try { await assertDestDir(layout, config, dir); return null; } catch (e) { return e instanceof UnsafePathError ? e.reason : `destination_unreadable:${(e as NodeJS.ErrnoException).code ?? 'error'}`; } }; // never throw: one unreadable folder must not abort the whole run/preview
  if (item.action === 'move') {
   const bad = await check(join(layout.root, ...a.route!.folder.split('/')));
   if (!bad) return item;
+  if (bad.startsWith('destination_unreadable')) return { ...item, outcome: 'error', reason: bad, renamed: false, detail: 'the destination folder cannot be read: this file would stay in _Inbox with an error (the other files are not affected)' }; // the mover's own result for it (it never reviews an I/O error)
   const reason = bad.startsWith(FOLDER_MISSING) ? bad : 'destination_unsafe';
   const rv = await check(layout.review);
   return { ...item, action: 'review', reason, renamed: false, destination: rel(INBOX, REVIEW, p.name), ...(rv ? { detail: `${rv}: Needs_Review is not usable either, the file would stay in place (run "init --yes")` } : {}) };

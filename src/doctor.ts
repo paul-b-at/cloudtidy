@@ -75,6 +75,7 @@ export async function doctor(config: Config, exec: Exec = realExec): Promise<Che
  const st = await readStatus(config);
  if (st) {
   add('last run: file errors', !(st.counts?.errors), false, st.counts?.errors ? `${st.counts.errors} file(s) ended in an error (rollback_failed, folder_missing for Needs_Review, history/io): see the log and "review"/"history"` : 'none', true);
+  if (st.budget?.hit) add('last run: time budget', false, false, `the last ${st.budget.streak} run(s) in a row stopped at the ${config.maxRunSeconds}s budget (${st.budget.left} file(s) left in the latest): more files arrive than one run can handle, or the model is slow; raise maxRunSeconds or check "status"`, true);
   add('last run: model reachable', !!st.model?.available, false, `${st.context} run at ${st.time}: ${st.model ? `${st.model.available ? 'available' : 'unavailable'} (${st.model.reason})` : 'not checked'}`);
   add('last run: _Inbox readable', st.inboxReadable, false, `${st.context} context`);
   const launchd = st.context === 'launchd';

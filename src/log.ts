@@ -1,4 +1,4 @@
-import { copyFile, chmod, rename, lstat, truncate, rm } from 'node:fs/promises';
+import { copyFile, chmod, rename, lstat, open, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
 /** Timestamped stderr logging (launchd redirects it to ~/Library/Logs/cloudtidy). Never pass document text here. */
@@ -20,10 +20,12 @@ export async function rotateLogs(logDir: string, files: string[] = LOG_FILES, ma
    if (!s) continue;
    if (s.isSymbolicLink()) { warn(`warning: log rotation skipped: ${f} is a symlink (never written through; replace it with a regular file)`); continue; }
    if (!s.isFile() || s.size <= maxBytes) continue;
+   if (s.nlink > 1) { warn(`warning: log rotation skipped: ${f} has ${s.nlink} hard links (truncating it would also empty the other names; replace it with a regular file)`); continue; }
    await rm(`${p}.${keep - 1}`, { force: true });
    for (let i = keep - 2; i >= 1; i--) await rename(`${p}.${i}`, `${p}.${i + 1}`).catch(e => { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }); // a missing older file is fine, anything else is reported
    if (keep >= 2) { await copyFile(p, `${p}.1`, constants.COPYFILE_EXCL); await chmod(`${p}.1`, 0o600).catch(() => {}); }
-   await truncate(p, 0);
+   const fh = await open(p, constants.O_WRONLY | constants.O_NOFOLLOW); // not a path-based truncate: a link swapped in after the lstat is refused (ELOOP), never followed
+   try { const t = await fh.stat(); if (t.ino !== s.ino || t.dev !== s.dev || t.nlink > 1) throw Object.assign(new Error('changed'), { code: 'ECHANGED' }); await fh.truncate(0); } finally { await fh.close(); }
    rotated.push(f);
   } catch (e) { warn(`warning: log rotation of ${f} failed (${(e as NodeJS.ErrnoException).code ?? 'error'}): the log keeps growing until this is fixed`); }
  }
