@@ -18,7 +18,7 @@ export async function extract(file: string, config: Config): Promise<string> {
   try { const b = Buffer.alloc(16384); const { bytesRead } = await handle.read(b, 0, b.length, 0); return b.subarray(0, bytesRead).toString('utf8'); } finally { await handle.close(); }
  }
  if (ext === '.pdf') {
-  try { const text = await run('pdftotext', ['-f', '1', '-l', '2', file, '-'], '', config.timeoutMs, 262144); if (text.trim().length >= 30) return text.slice(0, 20000); } catch { /* Native OCR is the fallback. */ }
+  try { const text = await run(process.env.CLOUDTIDY_PDFTOTEXT || Bun.which('pdftotext') || 'pdftotext', ['-f', '1', '-l', '2', file, '-'], '', config.timeoutMs, 262144); if (text.trim().length >= 30) return text.slice(0, 20000); } catch { /* Native OCR is the fallback. */ }
  }
  if (OCR.has(ext)) return run(config.ocr, [file], '', config.timeoutMs, 262144);
  throw new ExtractError('unsupported_type');

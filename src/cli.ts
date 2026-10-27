@@ -1,14 +1,16 @@
 import { createInterface } from 'node:readline/promises';
-import { lstat, readdir } from 'node:fs/promises';
+import { lstat, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { INBOX, REVIEW, defaultConfigPath, expandHome, loadConfig, type Config } from './config';
 import { doctor, formatChecks } from './doctor';
 import { type Item } from './engine';
 import { evaluate, formatReport, inspectFile, readLabels } from './evaluate';
 import { newRunId, readHistory, undoMoves, undoable, type MoveRecord } from './history';
-import { agentState, installAgent, plistInput, renderPlist, uninstallAgent } from './install';
+import { agentState, installAgent, plistInput, renderPlist, resolveBunPath, resolvePdftotext, uninstallAgent } from './install';
+import { applyInit, formatInit, planInit } from './init';
+import { describePending, PendingStore } from './pending';
 import { acquireLock } from './lock';
-import { resolveLayout } from './paths';
+import { assertApplyAllowed, resolveLayout } from './paths';
 import { isDaemonContext, runOnce, type RunReport } from './run';
 import { readStatus, stateFiles } from './state';
 import { join } from 'node:path';
@@ -22,20 +24,27 @@ Usage: bun src/cli.ts <command> [options]
 
 Commands
   classify <file>                 Classify one file (read-only, any path). Prints route, destination, tier, reason.
-  scan --dry-run                  Preview what would happen to ${INBOX} (no debounce, lock, cache or state writes).
-  run [--apply] [--no-cache]      One ${INBOX} pass: debounce, classify, (with --apply) move + audit-log. This is what the LaunchAgent runs.
-  review                          List ${INBOX}/${REVIEW} with the recorded reason for each file.
+  scan --dry-run                  Preview what would happen to ${INBOX} as JSON (same debounce as run; no lock, cache or state writes).
+  run [--apply] [--no-cache] [--json]
+                                  One ${INBOX} pass: debounce, classify, (with --apply) move + audit-log. Files that are unstable, empty or
+                                  waiting for the model stay in ${INBOX} as pending (reported with a reason). The LaunchAgent runs this with --daemon.
+  review                          List ${INBOX}/${REVIEW} with the recorded reason for each file, then files still pending in ${INBOX}.
   history [--limit N] [--run ID] [--json]
                                   Show the audit log (append-only JSONL in the state dir).
   undo <runId> | --last [--apply] Preview (default) or perform the undo of one run. Restores only if the destination hash
                                   still matches and the original path is free; never overwrites.
+  init [--yes]                    Preview (default) or create the missing taxonomy folders (_Inbox, the buckets, configured sub-folders).
+                                  Run it only after iCloud Drive has fully synced. Moves never create top-level buckets themselves.
   sweep [--apply] [--yes]         Loose top-level files in the iCloud Drive root. Preview first; --apply asks for confirmation (or --yes).
                                   Never runs from the LaunchAgent. Folders, app containers and _Archiv are never touched.
-  install [--print]               Write ~/Library/LaunchAgents/at.paul.cloudtidy.plist and load it (macOS). --print only prints the plist.
+  install [--print] [--bun <path>]
+                                  Write ~/Library/LaunchAgents/at.paul.cloudtidy.plist and load it (macOS). --print only prints the plist.
+                                  bun defaults to ~/.bun/bin/bun (then /opt/homebrew/bin/bun), never a versioned Cellar path.
   uninstall                       Unload and remove the LaunchAgent (history, cache, logs are kept).
   status                          LaunchAgent state, last run, model availability in the LaunchAgent context, lock, history size.
-  eval <dir> [--expected labels.json] [--json]
-                                  Read-only batch report over a folder: route distribution, review rate, accuracy vs labels, cold/warm latency.
+  eval <dir> [--expected labels.json] [--max-files N] [--json]
+                                  Read-only batch report over a folder (default cap 500 files, dotfiles and the labels file are skipped): route
+                                  distribution, review rate, accuracy vs labels, rule-tier routing latency (flags p95 > 10 ms) and naming/model latency.
   doctor [--json]                 Environment checks (helpers, model, inbox, exclusive rename, LaunchAgent).
 
 Global options: --config <file> (default config/default.config.json), --help`;
@@ -53,35 +62,45 @@ function parse(argv: string[], spec: Spec) {
  return { flags, values, pos };
 }
 const out = (s: string) => console.log(s);
+/** File names are untrusted: never echo raw control / bidi / invisible characters to a terminal or log (terminal escape injection, spoofing). */
+const show = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f\u200b\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g, c => `\\u{${c.codePointAt(0)!.toString(16)}}`);
+const INBOX_UNREADABLE = `${INBOX} is not readable (check the path, iCloud sync and Full Disk Access for bun).`;
 function printItems(items: Item[]) {
- for (const i of items) out(`${i.outcome.padEnd(9)} ${i.file}  →  ${i.destination}   [${i.tier}${i.cached ? ', cached' : ''}: ${i.reason}${i.renamed ? ', renamed' : ''}${i.detail ? `, ${i.detail}` : ''}]`);
+ for (const i of items) out(show(`${i.outcome.padEnd(9)} ${i.file}  →  ${i.destination}   [${i.tier}${i.cached ? ', cached' : ''}: ${i.reason}${i.renamed ? ', renamed' : ''}${i.detail ? `, ${i.detail}` : ''}]`));
 }
 function printReport(r: RunReport, apply: boolean) {
  if (r.locked) return out('Another cloudtidy run holds the lock; nothing done.');
- if (!r.inboxReadable) return out(`${INBOX} is not readable (check the path, iCloud sync and Full Disk Access for bun).`);
+ if (!r.inboxReadable) return out(INBOX_UNREADABLE);
  out(`${apply ? 'APPLY' : 'DRY-RUN'} ${r.runId}${r.model ? `   model: ${r.model.available ? 'available' : `UNAVAILABLE (${r.model.reason})`}` : ''}`);
  printItems(r.items);
- for (const s of r.skipped) out(`skipped   ${s.name}  (${s.reason})`);
+ for (const s of r.skipped) out(show(`skipped   ${s.name}  (${s.reason})`));
+ if (r.recovered.recovered || r.recovered.aborted) out(`journal: ${r.recovered.recovered} interrupted move(s) recovered, ${r.recovered.aborted} aborted (see "history")`);
  out(`counts: ${Object.entries(r.counts).map(([k, v]) => `${k}=${v}`).join(' ')}${apply ? '' : '\nNo files were changed. Use --apply to move files.'}`);
 }
 async function sweepConfirm(items: Item[], opts: { yes: boolean }): Promise<boolean> {
  printItems(items);
  if (!items.length) { out('Nothing to sweep.'); return false; }
  if (opts.yes) return true;
- if (!process.stdin.isTTY) { out('Refusing to move files without confirmation: not a terminal. Re-run in a terminal or add --yes after reviewing the preview.'); return false; }
+ if (!process.stdin.isTTY) { out('Refusing to move files without confirmation: not a terminal. Re-run in a terminal or add --yes after reviewing the preview.'); process.exitCode = 1; return false; }
  const rl = createInterface({ input: process.stdin, output: process.stdout });
  try { return (await rl.question(`Move ${items.length} file(s) as shown above? Type "yes" to continue: `)).trim().toLowerCase() === 'yes'; } finally { rl.close(); }
 }
 async function reviewList(config: Config) {
  const layout = await resolveLayout(config), dir = layout.review, history = await readHistory(stateFiles(config).history);
  const names = await readdir(dir).catch(() => [] as string[]);
- if (!names.length) return out(`${INBOX}/${REVIEW} is empty.`);
+ if (!names.length) out(`${INBOX}/${REVIEW} is empty.`);
  for (const n of names.sort()) {
   const s = await lstat(join(dir, n));
   if (!s.isFile()) continue;
   const rec = [...history].reverse().find((r): r is MoveRecord => r.type === 'move' && r.destination === join(dir, n));
-  out(`${n}  ${(s.size / 1024).toFixed(0)} KiB  ${s.mtime.toISOString().slice(0, 10)}  ${rec ? `${rec.outcome}: ${rec.reason} (run ${rec.runId})` : 'not placed by cloudtidy'}`);
+  out(show(`${n}  ${s.size < 1024 ? `${s.size} B` : `${(s.size / 1024).toFixed(0)} KiB`}  ${s.mtime.toISOString().slice(0, 10)}  ${rec ? `${rec.outcome}: ${rec.reason} (run ${rec.runId})` : 'not placed by cloudtidy'}`));
  }
+}
+/** Files that stay in _Inbox for now (still changing, empty, waiting for the model): the same description scan/run/status use. */
+async function pendingList(config: Config): Promise<{ name: string; text: string }[]> {
+ const store = await PendingStore.load(stateFiles(config).pending);
+ const here = new Set(await readdir((await resolveLayout(config)).inbox).catch(() => [] as string[]));
+ return store.list().filter(e => here.has(e.name)).map(e => ({ name: e.name, text: `${e.kind} — ${describePending(e)}${e.attempts ? ` (${e.attempts} attempt${e.attempts === 1 ? '' : 's'})` : ''}` }));
 }
 async function main() {
  const argv = process.argv.slice(2);
@@ -92,21 +111,22 @@ async function main() {
  if (argv.includes('--help')) return out(HELP);
  const c = await loadConfig(configPath);
  switch (cmd) {
-  case 'classify': { const { pos } = parse(argv, { positionals: 1 }); if (!pos[0]) throw new UsageError('classify <file>'); return out(JSON.stringify(await inspectFile(pos[0], c), null, 2)); }
+  case 'classify': { const { pos } = parse(argv, { positionals: 1 }); if (!pos[0]) throw new UsageError('classify <file>'); if (!(await stat(pos[0]).catch(() => null))?.isFile()) throw Error(`classify: not a readable file: ${pos[0]}`); return out(JSON.stringify(await inspectFile(pos[0], c), null, 2)); }
   case 'scan': {
    const { flags } = parse(argv, { flags: ['--dry-run'] });
    if (!flags.has('--dry-run')) throw new UsageError('scan only supports --dry-run (use "run --apply" to move files)');
    const r = await runOnce(c, { apply: false, readOnly: true });
+   if (!r.inboxReadable) throw Error(INBOX_UNREADABLE);
    return out(JSON.stringify({ dryRun: true, proposals: r.items, skipped: r.skipped }, null, 2));
   }
   case 'run': {
    const { flags } = parse(argv, { flags: ['--apply', '--daemon', '--no-cache', '--json'] });
    const r = await runOnce(c, { apply: flags.has('--apply'), daemon: flags.has('--daemon'), useCache: !flags.has('--no-cache') });
    if (flags.has('--json')) out(JSON.stringify(r, null, 2)); else printReport(r, r.mode === 'apply');
-   if (r.counts.errors) process.exitCode = 1;
+   if (r.counts.errors || (!r.inboxReadable && r.context !== 'launchd')) process.exitCode = 1;
    return;
   }
-  case 'review': parse(argv, {}); return reviewList(c);
+  case 'review': { parse(argv, {}); await reviewList(c); const p = await pendingList(c); if (p.length) { out(`Pending in ${INBOX} (not in ${REVIEW}; retried automatically):`); for (const e of p) out(show(`${e.name}  ${e.text}`)); } return; }
   case 'history': {
    const { flags, values } = parse(argv, { flags: ['--json'], values: ['--limit', '--run'] });
    let recs = await readHistory(stateFiles(c).history);
@@ -115,7 +135,7 @@ async function main() {
    recs = recs.slice(-n);
    if (flags.has('--json')) return out(JSON.stringify(recs, null, 2));
    if (!recs.length) return out('No history yet.');
-   for (const r of recs) out(r.type === 'move' ? `${r.time} ${r.runId} ${r.outcome.padEnd(9)} ${r.source} → ${r.destination}  [${r.tier}${r.route ? `:${r.route}` : ''}, ${r.reason}, sha256 ${r.sha256.slice(0, 12)}…, ${r.size} B]` : `${r.time} ${r.runId} undo      ${r.source} → ${r.destination}  (of ${r.of})`);
+   for (const r of recs) out(show(r.type === 'move' ? `${r.time} ${r.runId} ${r.outcome.padEnd(9)} ${r.source} → ${r.destination}  [${r.tier}${r.route ? `:${r.route}` : ''}, ${r.reason}, sha256 ${r.sha256.slice(0, 12)}…, ${r.size} B]` : `${r.time} ${r.runId} undo      ${r.source} → ${r.destination}  (of ${r.of})`));
    return;
   }
   case 'undo': {
@@ -127,11 +147,21 @@ async function main() {
    if (apply && !lock) throw Error('another cloudtidy run holds the lock; try again shortly');
    try {
     const items = await undoMoves(c, layout, files.history, { runId: pos[0], last: flags.has('--last') }, { apply, undoRunId: newRunId() });
-    if (!items.length) out(`Nothing to undo (${undoable(await readHistory(files.history)).length} undoable moves in history).`);
-    for (const i of items) out(`${i.status.padEnd(26)} ${i.from} → ${i.to}`);
+    if (!items.length) { out(`${pos[0] ? `No undoable moves found for run ${pos[0]}` : 'Nothing to undo'} (${undoable(await readHistory(files.history)).length} undoable moves in history; see "history").`); if (pos[0]) process.exitCode = 1; }
+    for (const i of items) out(show(`${i.status.padEnd(26)} ${i.from} → ${i.to}`));
     if (!apply && items.length) out('Preview only. Re-run with --apply to restore.');
     if (items.some(i => i.status.startsWith('skipped'))) process.exitCode = 1;
    } finally { await lock?.release(); }
+   return;
+  }
+  case 'init': {
+   const { flags } = parse(argv, { flags: ['--yes'] });
+   const layout = await resolveLayout(c);
+   if (!flags.has('--yes')) { out(formatInit(await planInit(layout, c), false)); return; }
+   await assertApplyAllowed(layout, c);
+   const lock = await acquireLock(stateFiles(c).lock, { waitMs: c.lockWaitMs });
+   if (!lock) throw Error('another cloudtidy run holds the lock; try again shortly');
+   try { out(formatInit(await applyInit(layout, c), true)); } finally { await lock.release(); }
    return;
   }
   case 'sweep': {
@@ -140,15 +170,16 @@ async function main() {
    if (flags.has('--yes') && !flags.has('--apply')) throw new UsageError('--yes only applies together with --apply');
    const apply = flags.has('--apply');
    const r = await runOnce(c, { apply, kind: 'root', mode: 'sweep', notify: false, ...(apply ? { confirm: items => sweepConfirm(items, { yes: flags.has('--yes') }) } : {}) });
-   if (r.aborted) return out('Aborted: no files were moved.');
-   if (apply) printReport(r, true); else { printItems(r.items); for (const s of r.skipped) out(`skipped   ${s.name}  (${s.reason})`); out('Preview only. Re-run with --apply (and confirm) to move files.'); }
+   if (!r.inboxReadable) throw Error(`${INBOX_UNREADABLE} (sweep sends uncertain files to ${INBOX}/${REVIEW}.)`);
+   if (r.aborted) return r.items.length ? out('Aborted: no files were moved.') : undefined;
+   if (apply) printReport(r, true); else { printItems(r.items); for (const s of r.skipped) out(show(`skipped   ${s.name}  (${s.reason})`)); out('Preview only. Re-run with --apply (and confirm) to move files.'); }
    if (r.counts.errors) process.exitCode = 1;
    return;
   }
   case 'install': {
-   const { flags } = parse(argv, { flags: ['--print'] });
-   if (flags.has('--print')) { const inbox = join(c.root, INBOX); return out(renderPlist(plistInput(c, configPath, inbox))); }
-   for (const n of await installAgent(c, configPath)) out(n);
+   const { flags, values } = parse(argv, { flags: ['--print'], values: ['--bun'] });
+   if (flags.has('--print')) { const inbox = join(c.root, INBOX); return out(renderPlist(plistInput(c, configPath, inbox, await resolveBunPath(values['--bun']), resolvePdftotext()))); }
+   for (const n of await installAgent(c, configPath, undefined, undefined, { bun: values['--bun'] })) out(n);
    return out('Verify with: bun src/cli.ts status');
   }
   case 'uninstall': parse(argv, {}); for (const n of await uninstallAgent()) out(n); return;
@@ -159,14 +190,18 @@ async function main() {
    out(`Daemon apply mode: ${c.daemon.apply ? 'ON (moves files automatically)' : 'OFF (preview only)'}   interval: ${c.daemon.intervalSec}s   debounce: ${c.debounceMs}ms`);
    if (st) { out(`Last run: ${st.time} (${st.context}, ${st.mode}, run ${st.runId})`); out(`  model reachable in that context: ${st.model ? (st.model.available ? 'yes' : `NO (${st.model.reason})`) : 'not checked'};  ${INBOX} readable: ${st.inboxReadable ? 'yes' : 'NO'}`); out(`  counts: ${Object.entries(st.counts).map(([k, v]) => `${k}=${v}`).join(' ')}`); }
    else out('Last run: none recorded yet');
+   const p = await pendingList(c); out(`Pending in ${INBOX}: ${p.length}${p.length ? ' (run "review" for details)' : ''}`);
    const h = await readHistory(f.history); out(`History: ${h.filter(r => r.type === 'move').length} moves, ${undoable(h).length} undoable   (${f.history})`);
    return;
   }
   case 'eval': {
-   const { flags, values, pos } = parse(argv, { flags: ['--json'], values: ['--expected'], positionals: 1 });
-   if (!pos[0]) throw new UsageError('eval <dir> [--expected labels.json]');
+   const { flags, values, pos } = parse(argv, { flags: ['--json'], values: ['--expected', '--max-files'], positionals: 1 });
+   if (!pos[0]) throw new UsageError('eval <dir> [--expected labels.json] [--max-files N]');
+   const max = values['--max-files'] === undefined ? undefined : Number(values['--max-files']);
+   if (max !== undefined && (!Number.isInteger(max) || max < 1 || max > 100000)) throw new UsageError('--max-files must be a positive integer');
+   if (!(await stat(pos[0]).catch(() => null))?.isDirectory()) throw Error(`eval: not a readable folder: ${show(pos[0])}`);
    const labels = values['--expected'] ? await readLabels(values['--expected'], c) : null;
-   const r = await evaluate(pos[0], c, labels, {}, values['--expected'] ? [resolve(values['--expected'])] : []);
+   const r = await evaluate(pos[0], c, labels, {}, values['--expected'] ? [resolve(values['--expected'])] : [], { maxFiles: max });
    return out(flags.has('--json') ? JSON.stringify(r, null, 2) : formatReport(r));
   }
   case 'doctor': {
