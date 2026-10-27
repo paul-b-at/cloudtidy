@@ -115,3 +115,29 @@ test('log rotation never truncates through a symlink named launchd.out.log, and 
   expect(await readFile(victim, 'utf8')).toBe('keep');
  } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+// ---------------------------------------------------------------- R4-1: an extraction (OCR / pdftotext) timeout is the file's OWN failure: it is an attempt, backs off and may expire
+test('R4-1 a file whose OCR/pdftotext times out backs off and eventually expires (is not re-extracted on every run); breaker answers stay non-attempts', async () => {
+ const MIN = 60_000, sb = await sandbox({ model: { maxDeferHours: 24 } }); try {
+  await put(sb, 'scan.png', 'x'); let t = 1_700_000_000_000, extractCalls = 0;
+  const extract = async () => { extractCalls++; throw new HelperError('helper_timeout'); };
+  const run = () => runOnce(sb.config, { apply: true, sleep: async () => {}, model: healthy, extract, now: () => t } as never);
+  for (let i = 0; i < 90; i++) { await run(); t += 2 * MIN; } // 3 h of 2-minute runs
+  const after3h = extractCalls;
+  for (let i = 0; i < 12 * 24; i++) { await run(); t += 5 * MIN; } // + 24 h of 5-minute runs
+  console.log(`R4-1 extract calls in the first 3 h: ${after3h}; total after 27 h: ${extractCalls}`);
+  expect(after3h).toBeLessThanOrEqual(10); // 5/10/20/40/60-minute backoff
+  expect(await readdir(sb.review)).toEqual(['scan.png']); // gave up after maxDeferHours and >= 3 attempts
+ } finally { await sb.cleanup(); }
+});
+test('R4-1b extraction timeouts never trip the model breaker: the next file is still asked, and the timeout is an attempt', async () => {
+ const sb = await sandbox(); try {
+  await put(sb, 'aaa.png', 'x'); await put(sb, 'bbb.txt', 'an unclear note'); const t = 1_700_000_000_000; const asked: string[] = [];
+  const extract = async (file: string) => { if (file.endsWith('.png')) throw new HelperError('helper_timeout'); return 'an unclear note'; };
+  const m = (async (f: string) => { asked.push(f); return healthy(f as never, '' as never, {} as never, null as never); }) as never;
+  const r = await runOnce(sb.config, { apply: true, sleep: async () => {}, model: m, extract, now: () => t } as never);
+  expect(asked).toEqual(['bbb.txt']); expect(r.items.find(x => x.file === 'bbb.txt')).toMatchObject({ outcome: 'moved' });
+  const e = (await PendingStore.load(stateFiles(sb.config).pending, () => t)).get('aaa.png')!;
+  expect(e.applyAttempts).toBe(1); expect(e.attempts).toBe(1); expect(e.next).toBeGreaterThan(t);
+ } finally { await sb.cleanup(); }
+});
