@@ -31,7 +31,8 @@
       "aliases": [
         "Hutchison Drei Austria",
         "Hutchison Drei"
-      ]
+      ],
+      "commonWord": true
     },
     {
       "name": "A1",
@@ -45,7 +46,8 @@
       "aliases": [
         "Magenta Telekom",
         "T-Mobile Austria"
-      ]
+      ],
+      "commonWord": true
     },
     {
       "name": "Wien Energie",
@@ -76,7 +78,8 @@
     },
     {
       "name": "Verbund",
-      "aliases": []
+      "aliases": [],
+      "commonWord": true
     },
     {
       "name": "Wiener Städtische",
@@ -92,7 +95,8 @@
     },
     {
       "name": "Allianz",
-      "aliases": []
+      "aliases": [],
+      "commonWord": true
     }
   ],
   "routes": [

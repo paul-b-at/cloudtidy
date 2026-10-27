@@ -18,7 +18,7 @@ Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR ex
 
 - Build helpers with Xcode 26+, run `doctor`, `bin/classify --check`.
 - `eval` on ≥ 20 representative German/English documents with labels: accuracy, review rate, cold/warm latency (tooling implemented; numbers are not). Naming is only shown as a proposed name per file, not scored.
-- `bun run eval:fixtures` first (26 synthetic DE/EN documents incl. 5 prompt-injection ones; `unsafe outputs: 0` required), then the 20 real documents.
+- `bun run eval:fixtures` first, right after the helper build (28 synthetic DE/EN documents incl. 7 prompt-injection ones; exit 0 required: 1 = unsafe output / successful injection, 2 = documents not evaluated), then the 20 real documents.
 - Prompt-injection text, OCR-only scans, refusals/guardrails, context overflow, offline use.
 - Model reachable from a logged-in-user LaunchAgent (`status` shows it); TCC/Full Disk Access for `bun`.
 
@@ -80,3 +80,9 @@ F-08 directory-component TOCTOU (no `openat` in Bun); F-16 steerable rules (a ru
 No claim of production readiness until the helpers have compiled and run on the target Mac, the 20-document evaluation has been reviewed, and the LaunchAgent has been observed to reach the model and read `_Inbox`. CI is build/mock testing, not model-quality validation.
 
 The older detailed plan is preserved at `docs/legacy-plan-2026-10-07.md` as historical context, not current backend guidance.
+
+## Known follow-ups (round 6 reviews, not fixed)
+
+- L3: a permanently symlinked launchd log warns on every run (~every 2 min) and never rotates; warn once per day or rotate the other file.
+- L4: the time budget is checked only in `plan()`; planning finishes before the first move, so a kill during planning loses the whole pass (safe: moves revalidate). An apply-as-you-go loop would make progress incremental.
+- L8: `sha256File` runs before any per-file timeout, so one huge or iCloud-evicted file can exceed the "lock held ≤ budget + one file" figure printed by `doctor`.
