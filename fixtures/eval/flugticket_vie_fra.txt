@@ -1,0 +1,4 @@
+Austrian Airlines - Flugticket / Boarding Pass
+Passagier: MUSTERMANN/ERIKA
+Flug OS 000, VIE -> FRA, 24.11.2026 07:05, Sitz 12A
+Buchungscode ABC123 (Beispiel)

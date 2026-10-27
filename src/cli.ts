@@ -1,7 +1,7 @@
 import { createInterface } from 'node:readline/promises';
 import { lstat, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { INBOX, REVIEW, defaultConfigPath, expandHome, loadConfig, type Config } from './config';
+import { INBOX, REVIEW, defaultConfigPath, expandHome, loadConfig, oneFileMaxSeconds, worstCaseLockSeconds, type Config } from './config';
 import { doctor, formatChecks } from './doctor';
 import { type Item } from './engine';
 import { evaluate, formatReport, inspectFile, readLabels } from './evaluate';
@@ -13,6 +13,7 @@ import { acquireLock } from './lock';
 import { assertApplyAllowed, resolveLayout } from './paths';
 import { isDaemonContext, runOnce, type RunReport } from './run';
 import { readStatus, stateFiles } from './state';
+import { budgetLine, INBOX_UNREADABLE, isHeld, itemLines, renderReport, show, skippedLines } from './report';
 import { join } from 'node:path';
 
 const HELP = `cloudtidy — local-first iCloud Drive organizer (Apple Foundation Models, on-device only)
@@ -23,18 +24,21 @@ Nothing is ever deleted or overwritten; uncertain / duplicate / failed files go 
 Usage: bun src/cli.ts <command> [options]
 
 Commands
-  classify <file>                 Classify one file (read-only, any path). Prints route, destination, tier, reason.
+  classify <file>                 Classify one file (read-only, any path). Prints route, destination, tier, reason, naming and, when a
+                                  rule hit kept the original name, namingReason (e.g. naming_model_refusal).
   scan --dry-run                  Preview what would happen to ${INBOX} as JSON (same debounce as run; no lock, cache or state writes).
   run [--apply] [--no-cache] [--json] [--verbose]
                                   One ${INBOX} pass: debounce, classify, (with --apply) move + audit-log. Files that are unstable, empty or
-                                  waiting for the model stay in ${INBOX} as pending (reported with a reason). The LaunchAgent runs this with --daemon.
+                                  waiting for the model stay in ${INBOX} as pending (reported with a reason). A run starts no new file once its time budget
+                                  (maxRunSeconds, default 300) is spent; the rest waits for the next run. The LaunchAgent runs this with --daemon.
   review                          List ${INBOX}/${REVIEW} with the recorded reason for each file, then files still pending in ${INBOX}.
   history [--limit N] [--run ID] [--json]
                                   Show the audit log (append-only JSONL in the state dir).
   undo <runId> | --last [--apply] Preview (default) or perform the undo of one run. Restores only if the destination hash
                                   still matches and the original path is free; never overwrites.
   init [--yes]                    Preview (default) or create the missing taxonomy folders (_Inbox, the buckets, configured sub-folders).
-                                  Run it only after iCloud Drive has fully synced. Moves never create top-level buckets themselves.
+                                  Also creates ${INBOX}/${REVIEW}. Run it only after iCloud Drive has fully synced.
+                                  Moves never create any folder: a file whose destination folder is missing goes to review (folder_missing:<path>).
   sweep [--apply] [--yes] [--verbose]
                                   Loose top-level files in the iCloud Drive root. Preview first; --apply asks for confirmation (or --yes).
                                   Never runs from the LaunchAgent. Folders, app containers and _Archiv are never touched.
@@ -46,7 +50,8 @@ Commands
   eval <dir> [--expected labels.json] [--max-files N] [--json]
                                   Read-only batch report over a folder (default cap 500 files, dotfiles and the labels file are skipped): route
                                   distribution, review rate, accuracy vs labels, rule-tier routing latency (flags p95 > 10 ms) and naming/model latency.
-  doctor [--json]                 Environment checks (helpers, model, inbox, exclusive rename, LaunchAgent).
+  doctor [--json]                 Environment checks: native arm64 (not Rosetta), helpers, model, _Inbox, full taxonomy (buckets, sub-folders,
+                                  Needs_Review), exclusive rename probe on the iCloud volume, run time budget, LaunchAgent, last run, journal.
 
 Global options: --config <file> (default config/default.config.json), --help`;
 class UsageError extends Error {}
@@ -63,28 +68,12 @@ function parse(argv: string[], spec: Spec) {
  return { flags, values, pos };
 }
 const out = (s: string) => console.log(s);
-/** File names are untrusted: never echo raw control / bidi / invisible characters to a terminal or log (terminal escape injection, spoofing). */
-const show = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f\u200b\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g, c => `\\u{${c.codePointAt(0)!.toString(16)}}`);
-const INBOX_UNREADABLE = `${INBOX} is not readable (check the path, iCloud sync and Full Disk Access for bun).`;
-function printItems(items: Item[]) {
- for (const i of items) out(show(`${i.outcome.padEnd(9)} ${i.file}  →  ${i.destination}   [${i.tier}${i.cached ? ', cached' : ''}: ${i.reason}${i.renamed ? ', renamed' : ''}${i.detail ? `, ${i.detail}` : ''}]`));
-}
-/** Skipped entries: folders are only counted (a preview of the iCloud root lists dozens of them); everything else is named. `--verbose` lists all. */
-function printSkipped(skipped: RunReport['skipped'], verbose: boolean) {
- const dirs = skipped.filter(s => s.reason === 'directory');
- for (const s of verbose ? skipped : skipped.filter(x => x.reason !== 'directory')) out(show(`skipped   ${s.name}  (${s.reason})`));
- if (!verbose && dirs.length) out(`skipped   ${dirs.length} folder${dirs.length === 1 ? '' : 's'} (never touched; --verbose lists them)`);
-}
+const printItems = (items: Item[]) => { for (const l of itemLines(items)) out(l); };
+const printSkipped = (skipped: RunReport['skipped'], verbose: boolean) => { for (const l of skippedLines(skipped, verbose)) out(l); };
 function printReport(r: RunReport, apply: boolean, verbose = false) {
- if (r.locked) return out('Another cloudtidy run holds the lock; nothing done.');
- if (!r.inboxReadable) return out(INBOX_UNREADABLE);
- const head = `${apply ? 'APPLY' : 'DRY-RUN'} ${r.runId}${r.model ? `   model: ${r.model.available ? 'available' : `UNAVAILABLE (${r.model.reason})`}` : ''}`;
- if (!verbose && !r.items.length && !r.recovered.recovered && !r.recovered.aborted && !r.skipped.some(s => s.reason !== 'directory')) return out(`${head}: nothing to sort`); // keeps the daemon log small
- out(head);
- printItems(r.items);
- printSkipped(r.skipped, verbose);
- if (r.recovered.recovered || r.recovered.aborted) out(`journal: ${r.recovered.recovered} interrupted move(s) recovered, ${r.recovered.aborted} aborted (see "history")`);
- out(`counts: ${Object.entries(r.counts).map(([k, v]) => `${k}=${v}`).join(' ')}${apply ? '' : '\nNo files were changed. Use --apply to move files.'}`);
+ const { out: o, err } = renderReport(r, apply, verbose);
+ for (const l of o) out(l);
+ for (const l of err) console.error(l);
 }
 async function sweepConfirm(items: Item[], opts: { yes: boolean }): Promise<boolean> {
  printItems(items);
@@ -126,7 +115,8 @@ async function main() {
    if (!flags.has('--dry-run')) throw new UsageError('scan only supports --dry-run (use "run --apply" to move files)');
    const r = await runOnce(c, { apply: false, readOnly: true });
    if (!r.inboxReadable) throw Error(INBOX_UNREADABLE);
-   return out(JSON.stringify({ dryRun: true, proposals: r.items, skipped: r.skipped }, null, 2));
+   if (r.budget) console.error(budgetLine(r.budget));
+   return out(JSON.stringify({ dryRun: true, proposals: r.items, skipped: r.skipped, ...(r.budget ? { budget: r.budget } : {}) }, null, 2));
   }
   case 'run': {
    const { flags } = parse(argv, { flags: ['--apply', '--daemon', '--no-cache', '--json', '--verbose'] });
@@ -181,7 +171,7 @@ async function main() {
    const r = await runOnce(c, { apply, kind: 'root', mode: 'sweep', notify: false, ...(apply ? { confirm: items => sweepConfirm(items, { yes: flags.has('--yes') }) } : {}) });
    if (!r.inboxReadable) throw Error(`${INBOX_UNREADABLE} (sweep sends uncertain files to ${INBOX}/${REVIEW}.)`);
    if (r.aborted) return r.items.length ? out('Aborted: no files were moved.') : undefined;
-   if (apply) printReport(r, true, flags.has('--verbose')); else { printItems(r.items); printSkipped(r.skipped, flags.has('--verbose')); out('Preview only. Re-run with --apply (and confirm) to move files.'); }
+   if (apply) printReport(r, true, flags.has('--verbose')); else { printItems(r.items.filter(i => flags.has('--verbose') || !isHeld(i))); printSkipped(r.skipped, flags.has('--verbose')); if (r.budget) out(budgetLine(r.budget)); out('Preview only. Re-run with --apply (and confirm) to move files.'); }
    if (r.counts.errors) process.exitCode = 1;
    return;
   }
@@ -201,6 +191,7 @@ async function main() {
    const a = await agentState(), st = await readStatus(c), f = stateFiles(c);
    out(`LaunchAgent: ${a.installed ? 'installed' : 'not installed'}, ${a.loaded ? 'loaded' : 'not loaded'} (${a.plist})`);
    out(`Daemon apply mode: ${c.daemon.apply ? 'ON (moves files automatically)' : 'OFF (preview only)'}   interval: ${c.daemon.intervalSec}s   debounce: ${c.debounceMs}ms`);
+   out(`Run time budget: ${c.maxRunSeconds}s (checked before each file; one file takes at most ~${oneFileMaxSeconds(c)}s, so the lock is held for at most ~${worstCaseLockSeconds(c)}s${worstCaseLockSeconds(c) > c.daemon.intervalSec ? `, longer than the ${c.daemon.intervalSec}s interval: overlapping triggers are skipped` : ''})`);
    if (st) { out(`Last run: ${st.time} (${st.context}, ${st.mode}, run ${st.runId})`); out(`  model reachable in that context: ${st.model ? (st.model.available ? 'yes' : `NO (${st.model.reason})`) : 'not checked'};  ${INBOX} readable: ${st.inboxReadable ? 'yes' : 'NO'}`); out(`  counts: ${Object.entries(st.counts).map(([k, v]) => `${k}=${v}`).join(' ')}`); }
    else out('Last run: none recorded yet');
    const p = await pendingList(c); out(`Pending in ${INBOX}: ${p.length}${p.length ? ' (run "review" for details)' : ''}`);

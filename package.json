@@ -10,7 +10,8 @@
     "scan": "bun src/cli.ts scan --dry-run",
     "doctor": "bun src/cli.ts doctor",
     "eval": "bun src/cli.ts eval",
-    "build:helpers": "bash scripts/build-helpers.sh"
+    "build:helpers": "bash scripts/build-helpers.sh",
+    "eval:fixtures": "bun src/fixture-eval.ts"
   },
   "devDependencies": {
     "@types/bun": "1.3.2",

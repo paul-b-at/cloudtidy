@@ -1,0 +1,6 @@
+ACME Consulting Ltd.
+Invoice No. 2026-0042
+Invoice date: 2026-09-30
+Description: 12 h consulting, October workshop
+Amount due: EUR 1,440.00, payment within 14 days
+IBAN AT00 0000 0000 0000 0000 (fictional)
