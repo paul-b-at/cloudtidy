@@ -13,7 +13,8 @@ export interface MoveRecord {
  route: string | null; tier: 'rule' | 'model' | 'none'; outcome: Outcome; reason: string; renamed: boolean;
 }
 export interface UndoRecord { v: 1; type: 'undo'; id: string; runId: string; time: string; of: string; source: string; destination: string }
-export interface IntentRecord extends Omit<MoveRecord, 'type'> { type: 'intent' }
+/** `ino`: inode of the source at planning time. A rename keeps it, so recovery can tell "our file landed" from "someone put an identical file there". */
+export interface IntentRecord extends Omit<MoveRecord, 'type'> { type: 'intent'; ino?: number }
 export interface CommitRecord { v: 1; type: 'commit'; id: string; runId: string; time: string; of: string; recovered?: boolean }
 export interface AbortRecord { v: 1; type: 'abort'; id: string; runId: string; time: string; of: string; why: string }
 /** What is stored on disk. Moves are journaled write-ahead: `intent` (before the rename), then `commit` (after it) or `abort`. */
@@ -80,7 +81,7 @@ export interface MoveJournal {
  /** Best effort: the rename did not happen (or was rolled back). */
  abort(id: string, why: string): Promise<void>;
 }
-export type JournalBase = Pick<MoveRecord, 'runId' | 'mode' | 'source' | 'sha256' | 'size' | 'route' | 'tier' | 'outcome' | 'reason' | 'renamed'>;
+export type JournalBase = Pick<MoveRecord, 'runId' | 'mode' | 'source' | 'sha256' | 'size' | 'route' | 'tier' | 'outcome' | 'reason' | 'renamed'> & { ino?: number };
 export function makeJournal(file: string, base: JournalBase): MoveJournal {
  return {
   async intent(destination) {
@@ -105,8 +106,10 @@ export interface Reconciled { recovered: number; aborted: number }
 export async function reconcileIntents(file: string): Promise<Reconciled> {
  const out: Reconciled = { recovered: 0, aborted: 0 };
  for (const i of pendingIntents(await readRawHistory(file))) {
-  const dst = await lstat(i.destination).catch(() => null), srcThere = await exists(i.source).catch(() => true);
-  const landed = !!dst && dst.isFile() && !dst.isSymbolicLink() && dst.size === i.size && (await sha256File(i.destination).catch(() => '')) === i.sha256;
+  const dst = await lstat(i.destination).catch(() => null), src = await lstat(i.source).catch(e => ((e as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined));
+  // `srcThere`: something is at the source path. With a recorded inode, a DIFFERENT file there (the user re-created the name after a failed rollback) does not make the destination any less ours.
+  const srcThere = src !== null && !(src && dst && typeof i.ino === 'number' && src.ino !== dst.ino && dst.ino === i.ino);
+  const landed = !!dst && dst.isFile() && !dst.isSymbolicLink() && dst.size === i.size && (typeof i.ino !== 'number' || dst.ino === i.ino) && (await sha256File(i.destination).catch(() => '')) === i.sha256;
   if (landed && !srcThere) { await appendHistory(file, { v: 1, type: 'commit', id: randomBytes(6).toString('hex'), runId: i.runId, time: new Date().toISOString(), of: i.id, recovered: true }); out.recovered++; }
   else { await appendHistory(file, { v: 1, type: 'abort', id: randomBytes(6).toString('hex'), runId: i.runId, time: new Date().toISOString(), of: i.id, why: landed ? 'source_and_destination_present' : srcThere ? 'rename_did_not_happen' : 'destination_missing_or_changed' }); out.aborted++; }
  }
