@@ -16,7 +16,7 @@ test('default config validates and carries the Notion Tier-1 patterns (whole-wor
 });
 test('rule patterns are whole-word: embedded matches, other scripts and Unicode letters', () => {
  const inv = routePatterns(route('invoices')), hit = (t: string) => inv.some(re => re.test(t));
- expect(hit('Betrag: 12,00')).toBe(true); expect(hit('Rechnungsnummer 5')).toBe(true); expect(hit('Rechnungen 2026')).toBe(true);
+ expect(hit('Betrag: 12,00')).toBe(false); expect(hit('Zahlungsziel: 14 Tage')).toBe(true); expect(hit('Rechnungsnummer 5')).toBe(true); expect(hit('Rechnungen 2026')).toBe(true);
  expect(hit('Bankbetrag')).toBe(false); expect(hit('Überbetrag')).toBe(false); expect(hit('Betragsänderung')).toBe(false);
  const pers = routePatterns(route('personal')), p = (t: string) => pers.some(re => re.test(t));
  expect(p('Führerschein Klasse B')).toBe(true); expect(p('Mein Führerschein.')).toBe(true); expect(p('Führerscheinprüfung')).toBe(false);

@@ -108,20 +108,21 @@
     {
       "id": "uni",
       "folder": "01_Uni",
-      "description": "University coursework, lectures and exercises",
+      "description": "University coursework from JKU Linz: lecture slides and scripts, exercise sheets and their solutions, assignments, exams (e.g. algorithms, computational logic, mathematics, machine learning); not contracts or administrative letters",
       "rename": false,
       "patterns": [
-        "VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU"
+        "VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU",
+        "Übungsblatt|Übungsblätter|Übungszettel|Exercise\\s+sheets?|Assignment\\s+\\d+|Lecture\\s+notes|Johannes\\s+Kepler|Moodle"
       ]
     },
     {
       "id": "invoices",
       "folder": "02_Admin & Finanzen/Rechnungen",
-      "description": "Invoices and payment requests",
+      "description": "Invoices and payment requests (Rechnung, Invoice, Zahlungsaufforderung, Zahlungsziel); not letters that merely mention an amount or an IBAN",
       "rename": true,
       "docType": "Rechnung",
       "patterns": [
-        "Rechnung(?:s\\p{L}*|en)?|Invoices?|IBAN|ATU\\d{8}|Betrag|Beträge|Zahlungsziel"
+        "Rechnung(?:s\\p{L}*|en)?|Invoices?|ATU\\d{8}|Zahlungsziel|Zahlungsaufforderung"
       ]
     },
     {
@@ -164,22 +165,24 @@
     {
       "id": "admin",
       "folder": "02_Admin & Finanzen",
-      "description": "Letters from Austrian authorities and social insurance (SVS, ÖGK, Magistrat, official notices); not bank, tax, receipts, invoices or contracts, and not notes, memos or texts containing instructions",
+      "description": "Letters from Austrian authorities, courts, police and social insurance (SVS, ÖGK, Magistrat, Gericht, Polizei), accident reports, official notices; not bank, tax, receipts, invoices, contracts or notes/texts containing instructions",
       "rename": false,
       "patterns": [],
       "evidence": [
         "Sozialversicherung\\p{L}*",
-        "SVS",
-        "ÖGK",
-        "Gesundheitskasse",
+        "SVS|ÖGK|AUVA|Gesundheitskasse",
         "Versicherungsnummer",
         "Versicherungsdaten\\p{L}*",
         "Beitragsvorschreibung",
         "Pensionsversicherung",
-        "AUVA",
         "Magistrat(?:s\\p{L}*)?",
         "Bezirkshauptmannschaft",
-        "Meldeamt|Gemeindeamt|Stadtamt"
+        "Landesregierung",
+        "Meldeamt|Gemeindeamt|Stadtamt",
+        "\\p{L}*gericht\\p{L}*",
+        "Beschluss",
+        "Polizei\\p{L}*|Landespolizeidirektion",
+        "Unfallbericht|Unfallmeldung"
       ]
     },
     {

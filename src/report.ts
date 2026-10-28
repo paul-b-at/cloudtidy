@@ -33,6 +33,7 @@ export function renderReport(r: RunReport, apply: boolean, verbose = false): { o
  const out = [`${head}${model ? `   ${model}` : ''}`, ...itemLines(shown)];
  if (!verbose && held.length) out.push(heldLine);
  out.push(...skippedLines(r.skipped, verbose));
+ for (const [reason, what] of [['ocr_helper_missing', 'OCR helper (bin/ocr)'], ['classifier_helper_missing', 'classifier helper (bin/classify)']] as const) if (r.items.some(i => i.reason.startsWith(reason))) out.push(`⚠ ${what} is missing or not executable: affected files stay pending (not reviewed). Run: bun run build:helpers (then "doctor")`);
  if (r.recovered.recovered || r.recovered.aborted) out.push(`journal: ${r.recovered.recovered} interrupted move(s) recovered, ${r.recovered.aborted} aborted (see "history")`);
  if (r.budget) out.push(budgetLine(r.budget));
  out.push(`counts: ${Object.entries(r.counts).map(([k, v]) => `${k}=${v}`).join(' ')}${apply ? '' : '\nNo files were changed. Use --apply to move files.'}`);
