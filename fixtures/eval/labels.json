@@ -30,5 +30,9 @@
   "uebungsblatt_exercise_sheet_en.txt": "uni",
   "servicevertrag_iban_betrag.txt": "contracts",
   "bezirksgericht_unterhaltserhoehung.txt": "admin",
-  "unfallbericht_kfz_beispiel.txt": "admin"
+  "unfallbericht_kfz_beispiel.txt": "admin",
+  "gerichtsschreiben_studium_beispiel.txt": "admin",
+  "handschrift_ocr_k_nummer.txt": "uni",
+  "Lebenslauf_Maria_Muster.txt": "personal",
+  "Bello_Vertrag_Tierhaftpflicht.txt": "contracts"
 }

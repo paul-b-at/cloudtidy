@@ -1,0 +1,6 @@
+Lebenslauf
+Maria Muster, geboren 05.05.1999 in Musterstadt
+Ausbildung: Bachelorstudium Informatik, u. a. Computational Logic und Mathematics for AI
+Projekte: github.com/maria-muster/demo-app (Open Source, Repository mit Architecture-Notizen)
+Sprachen: Deutsch, Englisch
+(Fictional example, fake data.)

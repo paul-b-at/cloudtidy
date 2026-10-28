@@ -1,0 +1,6 @@
+K 98765432
+Aufgabe 2
+lim (1 + 1/n)^n = e
+f'(x) = 2x + 3 ,  F(x) = x^2 + 3x + C
+Beweis: Induktion nach n.  n=1: 1 <= 1 ok
+(Fictional OCR text of a handwritten sheet, fake data.)
