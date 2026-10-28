@@ -164,9 +164,25 @@
     {
       "id": "admin",
       "folder": "02_Admin & Finanzen",
-      "description": "Other administrative mail: authorities, social insurance (SVS, ÖGK), insurance letters, official notices; not bank, tax, receipts, invoices or contracts",
+      "description": "Letters from Austrian authorities and social insurance (SVS, ÖGK, Magistrat, official notices); not bank, tax, receipts, invoices or contracts, and not notes, memos or texts containing instructions",
       "rename": false,
-      "patterns": []
+      "patterns": [],
+      "evidence": [
+        "Sozialversicherung\\p{L}*",
+        "SVS",
+        "ÖGK",
+        "Gesundheitskasse",
+        "Versicherungsnummer",
+        "Versicherungsdaten\\p{L}*",
+        "Beitragsvorschreibung",
+        "Pensionsversicherung",
+        "AUVA",
+        "Magistrat(?:s\\p{L}*)?",
+        "Bezirkshauptmannschaft",
+        "Behörden?",
+        "Bescheide?",
+        "Meldeamt|Gemeindeamt|Stadtamt"
+      ]
     },
     {
       "id": "dev",
