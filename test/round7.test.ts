@@ -19,7 +19,7 @@ const SUBFOLDERS: [string, string, string][] = [['bank', 'Bank', 'Kontoauszug Ok
 
 test('R7 routes: bank/tax/receipts are rename:false sub-folders, admin is the root with no patterns', () => {
  for (const [id, folder] of SUBFOLDERS.map(([i, f]) => [i, f] as const)) expect(route(id)).toMatchObject({ folder: `${A}/${folder}`, rename: false });
- expect(route('admin')).toMatchObject({ folder: A, rename: false, patterns: [] });
+ expect(route('admin')).toMatchObject({ folder: A, rename: false }); expect(route('admin').patterns.length).toBeGreaterThan(0);
  for (const id of ['bank', 'tax', 'receipts']) expect(route(id).patterns.length).toBeGreaterThan(0);
  expect(route('admin').description).toMatch(/SVS/);
 });
@@ -48,9 +48,8 @@ test('R7 the model may answer bank / tax / receipts / admin; unknown ids are sti
  for (const id of ['bank', 'tax', 'receipts', 'admin']) { expect(parseModelResult(ans(id), config)?.route).toBe(id); expect(validateResult(ans(id), config)).toMatchObject({ route: id, tier: 'model', needsReview: false }); }
  for (const id of ['banking', 'Bank', 'steuern', 'belege', 'admin/', '02_Admin & Finanzen/Bank', '../Bank', 'receipt']) { expect(parseModelResult(ans(id), config), id).toBeNull(); expect(validateResult(ans(id), config).reason).toBe('invalid_response'); }
 });
-test('R7 admin has no patterns: it never matches in Tier 1, is still offered to the model and accepted from it', async () => {
- expect(routePatterns(route('admin'))).toEqual([]);
- for (const t of ['', 'Bescheid der Gemeinde Wien', 'Beitragsvorschreibung SVS', 'admin', '02_Admin & Finanzen', 'Verwaltung']) expect(heuristics('x.txt', t, config)?.id, t).not.toBe('admin');
+test('R7 admin (round 11: strong authority patterns only): weak words never match in Tier 1, it is still offered to the model and accepted from it', async () => {
+ for (const t of ['', 'Bescheid der Gemeinde Wien', 'Beitragsvorschreibung', 'admin', '02_Admin & Finanzen', 'Verwaltung']) expect(heuristics('x.txt', t, config)?.id, t).not.toBe('admin');
  expect(heuristics('x.txt', 'Bescheid der Gemeinde Wien', config)).toBeNull();
  // a patterns-less route validates (the key may even be absent) and is not dropped
  const { patterns: _p, ...noKey } = route('admin');
