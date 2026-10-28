@@ -13,6 +13,8 @@ export interface Route {
  docType?: string;
  /** Tier-1 regular expressions (case-insensitive, unicode), matched as whole words (see routePatterns). Exactly one matching route is "definite" and final. */
  patterns: string[];
+ /** Optional model-route evidence (same syntax and whole-word matching as `patterns`). When the MODEL picks this route, it is accepted only if at least one evidence pattern matches the file name or text; otherwise the file goes to review (`model_route_unverified:<id>`). Evidence never triggers Tier 1. */
+ evidence?: string[];
 }
 /** A sender recognised deterministically in invoice/contract text (no model call). `aliases` are other spellings of the same organisation. */
 export interface KnownSender { name: string; aliases: string[]; /** An ordinary word as well as a company (Drei, Magenta, Verbund, Allianz): only counts in the letterhead window or before a company suffix. */ commonWord?: boolean }
@@ -110,16 +112,20 @@ export function validateConfig(x: unknown): Config {
   if (v.rename && !RENAME_FOLDERS.includes(v.folder as string)) bad(`"rename": true is only allowed for ${RENAME_FOLDERS.join(' and ')}`);
   if (v.rename && (typeof v.docType !== 'string' || !/^[\p{L}][\p{L}\p{N}-]{0,30}$/u.test(v.docType))) bad('"docType" (letters, digits, "-", up to 31 characters) is required when "rename" is true');
   if (!v.rename && v.docType !== undefined) bad('"docType" only applies to routes with "rename": true');
-  const patterns = v.patterns ?? [];
-  if (!Array.isArray(patterns) || patterns.length > 16) bad('"patterns" must be a list of at most 16 regular expressions');
-  for (const [j, p] of (patterns as unknown[]).entries()) {
-   if (typeof p !== 'string' || !p || p.length > 400) bad(`"patterns[${j}]" must be a non-empty string of at most 400 characters`);
-   let re: RegExp;
-   try { re = new RegExp(wholeWord(p as string), 'iu'); } catch (e) { bad(`"patterns[${j}]" is not a valid regular expression (${(e as Error).message.replace(/^Invalid regular expression: /, '').slice(0, 120)})`); }
-   if (re!.test('')) bad(`"patterns[${j}]" matches the empty string (it would match every document)`);
-  }
+  const regexList = (key: 'patterns' | 'evidence'): string[] => {
+   const list = v[key] ?? [];
+   if (!Array.isArray(list) || list.length > 16) bad(`"${key}" must be a list of at most 16 regular expressions`);
+   for (const [j, p] of (list as unknown[]).entries()) {
+    if (typeof p !== 'string' || !p || p.length > 400) bad(`"${key}[${j}]" must be a non-empty string of at most 400 characters`);
+    let re: RegExp;
+    try { re = new RegExp(wholeWord(p as string), 'iu'); } catch (e) { bad(`"${key}[${j}]" is not a valid regular expression (${(e as Error).message.replace(/^Invalid regular expression: /, '').slice(0, 120)})`); }
+    if (re!.test('')) bad(`"${key}[${j}]" matches the empty string (it would match every document)`);
+   }
+   return list as string[];
+  };
+  const patterns = regexList('patterns'), evidence = regexList('evidence');
   ids.add(v.id as string); folders.add((v.folder as string).normalize('NFC'));
-  routes.push({ id: v.id as string, folder: v.folder as string, description: v.description as string, rename: v.rename as boolean, ...(v.rename ? { docType: v.docType as string } : {}), patterns: patterns as string[] });
+  routes.push({ id: v.id as string, folder: v.folder as string, description: v.description as string, rename: v.rename as boolean, ...(v.rename ? { docType: v.docType as string } : {}), patterns, ...(evidence.length ? { evidence } : {}) });
  }
  const blocklist = x.blocklist ?? [];
  if (!Array.isArray(blocklist) || blocklist.length > 64 || !blocklist.every(safeName)) throw Error('Invalid configuration: "blocklist" must be a list of at most 64 plain folder names');
@@ -171,7 +177,12 @@ export async function loadConfig(file = defaultConfigPath): Promise<Config> {
  * are spelled out in the pattern (e.g. `Rechnung(?:s\\p{L}*)?`).
  */
 export const wholeWord = (p: string) => `(?<![\\p{L}\\p{N}])(?:${p})(?![\\p{L}\\p{N}])`;
-const compiled = new WeakMap<Route, RegExp[]>();
+const compiled = new WeakMap<Route, RegExp[]>(), compiledEvidence = new WeakMap<Route, RegExp[]>();
+export function routeEvidence(route: Route): RegExp[] {
+ let r = compiledEvidence.get(route);
+ if (!r) { r = (route.evidence ?? []).map(p => new RegExp(wholeWord(p), 'iu')); compiledEvidence.set(route, r); }
+ return r;
+}
 export function routePatterns(route: Route): RegExp[] {
  let r = compiled.get(route);
  if (!r) { r = route.patterns.map(p => new RegExp(wholeWord(p), 'iu')); compiled.set(route, r); }
