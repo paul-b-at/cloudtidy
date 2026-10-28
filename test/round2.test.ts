@@ -243,7 +243,7 @@ test('admin subfolders: bank / tax / receipts keep names; admin root is model-on
 });
 test('F-16: sender and rule words are matched as whole words (accepted risk documented: rules remain steerable by document text)', () => {
  const inv = routePatterns(route('invoices'));
- expect(inv.some(re => re.test('Bankbetrag'))).toBe(false); expect(inv.some(re => re.test('der Betrag'))).toBe(true);
+ expect(inv.some(re => re.test('Bankbetrag'))).toBe(false); expect(inv.some(re => re.test('der Rechnungsbetrag'))).toBe(true); expect(inv.some(re => re.test('der Betrag'))).toBe(false); // round 10: Betrag alone is not an invoice word
  expect(heuristics('x.txt', 'F\u0075\u0308hrerschein', config)?.id).toBe('personal');
 });
 
@@ -407,7 +407,7 @@ test('classify / eval do not crash on a transient model failure: the file is rep
   const r = await evaluate(dir, sb.config, { 'u.txt': 'personal' }, { model: unavailable });
   expect(r.rows[0]).toMatchObject({ got: 'pending', verdict: 'review_instead', reason: 'model_unavailable' }); expect(r.distribution).toEqual({ pending: 1 });
   const { inspectFile } = await import('../src/evaluate');
-  expect(await inspectFile(join(dir, 'u.txt'), { ...sb.config, classifier: join(sb.dir, 'missing') })).toMatchObject({ reason: 'model_unavailable', needsReview: false });
+  expect(await inspectFile(join(dir, 'u.txt'), { ...sb.config, classifier: join(sb.dir, 'missing') })).toMatchObject({ reason: 'classifier_helper_missing', needsReview: false });
  } finally { await sb.cleanup(); }
 });
 
