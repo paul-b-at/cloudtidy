@@ -1,0 +1,7 @@
+REPUBLIK ÖSTERREICH / REPUBLIC OF AUSTRIA
+PASS / PASSPORT   Typ P   Code AUT
+Name: MUSTER   Vorname: ERIKA   Geburtsdatum: 01.01.1990
+Ausstellende Behörde / Authority: Magistrat der Stadt Wien
+Gültig bis: 31.12.2034
+P<AUTMUSTER<<ERIKA<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+(Fictional example, fake data.)

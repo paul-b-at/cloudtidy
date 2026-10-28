@@ -43,8 +43,8 @@ test('R10 court letter: no invoice rule (round 11: admin by rule, Bezirksgericht
 });
 test('R10 accident report: admin via evidence (Unfallbericht, Polizei)', async () => {
  const text = await fx(ACCIDENT);
- expect(heuristics(ACCIDENT, text, config)).toBeNull(); expect(routeVerified(route('admin'), ACCIDENT, text)).toBe(true);
- expect(await classify(ACCIDENT, text, config, { model: says('admin') })).toMatchObject({ route: 'admin', needsReview: false });
+ expect(heuristics(ACCIDENT, text, config)).toMatchObject({ id: 'admin' }); expect(routeVerified(route('admin'), ACCIDENT, text)).toBe(true); // round 12: Unfallbericht is an admin pattern
+ expect(await classify(ACCIDENT, text, config, { model: says('invoices') })).toMatchObject({ route: 'admin', tier: 'rule', needsReview: false });
 });
 test('R10 admin evidence additions: courts, police, accident reports, Landesregierung; bare Bescheid / Behörde / admin still do not count', () => {
  const ev = routeEvidence(route('admin')), e = (t: string) => ev.some(re => re.test(t));
@@ -59,7 +59,7 @@ test('R10 eval with an always-admin mock model: court + accident report are admi
  const got = (f: string) => r.report.rows.find(x => x.file === f)!.got;
  expect(got(COURT)).toBe('admin'); expect(got(ACCIDENT)).toBe('admin'); expect(got(EXERCISE)).toBe('uni'); expect(got(SERVICE)).toBe('contracts');
  expect(got('inj_route_force_nomatch.txt')).toBe('review'); expect(got('notiz_unklar.txt')).toBe('review');
- expect(r.unsafe).toEqual([]); expect(r.report.files).toBe(36);
+ expect(r.unsafe).toEqual([]); expect(r.report.files).toBe(38);
 });
 test('R10 README procedure: a file given up as deferred_too_long:classifier_helper_missing is not retried by itself; moved back to _Inbox with a working model it is sorted', async () => {
  const { sandbox } = await import('./helpers'); const { runOnce } = await import('../src/run'); const { rename, writeFile, readdir } = await import('node:fs/promises');

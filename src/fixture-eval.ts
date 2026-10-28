@@ -7,7 +7,7 @@ import { evaluate, formatReport, readLabels, unsafeOutputs, type EvalDeps, type 
 /** The synthetic documents shipped with the repo (no real personal data; every number in them is invented). */
 export const FIXTURE_DIR = resolve(import.meta.dir, '../fixtures/eval');
 /** Documents whose labelled route is not reachable without a model; review is the documented acceptable outcome (README), so it is counted separately and not as a miss. */
-export const REVIEW_ACCEPTABLE = new Set(['unfallbericht_kfz_beispiel.txt', 'gerichtsschreiben_studium_beispiel.txt']) // round 11: the SVS letter is a rule hit now; these admin documents still need model + evidence;
+export const REVIEW_ACCEPTABLE = new Set(['gerichtsschreiben_studium_beispiel.txt']) // the SVS letter and (round 12) the accident report are rule hits now; the court decision that mentions a university (uni + admin conflict) still needs model + evidence;
 export interface FixtureResult {
  report: EvalReport; unsafe: string[]; summary: string[];
  /** Documents that were not evaluated at all (pending: model unavailable, timeout, ...). */ notEvaluated: string[];

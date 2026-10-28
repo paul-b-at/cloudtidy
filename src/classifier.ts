@@ -56,20 +56,31 @@ export function routeVerified(route: Route, filename: string, text: string): boo
 }
 export interface RuleHit { route: Route; byFilename: boolean }
 /**
- * Tier 1 with the filename tiebreak (round 11): the routes whose patterns match the file name or the text (tested separately). Exactly one -> final (`rule_match`).
- * Several (a conflict) -> if the FILENAME alone matches exactly one of THOSE routes, that route wins (`rule_match_filename`); a filename that
- * matches none or more than one of them leaves the conflict to the model. The tiebreak never picks a route the text does not match.
- * Trade-off: the file name (user-controlled, but also steerable by a sender) now steers conflicts; it cannot create a hit by itself.
+ * Tier 1 with the filename tiebreak: the routes whose patterns match the file name or the text (tested separately). Exactly one -> final (`rule_match`).
+ * Several (a conflict) -> if the FILENAME alone matches exactly one route, that route wins (`rule_match_filename`), even if the text does not match it (round 12);
+ * a filename that matches none or more than one route leaves the conflict to the model.
+ * Trade-off: the file name (user-controlled, but also steerable by a sender) steers conflicts.
  */
 export function ruleMatch(filename: string, text: string, config: Config): RuleHit | null {
  const p = parts(filename, text), hits = config.routes.filter(r => anyMatch(routePatterns(r), p));
  if (hits.length === 1) return { route: hits[0]!, byFilename: false };
  if (hits.length < 2) return null;
- // Tiebreak: only among the routes the TEXT matches (a route matched by the file name alone never wins this way), and only when the name picks exactly one of them.
- const [name, body] = p;
- const named = hits.filter(r => routePatterns(r).some(re => re.test(body)) && routePatterns(r).some(re => re.test(name)));
+ // Tiebreak (round 12): on any conflict, if the FILE NAME alone matches exactly one route, that route wins, even when the text does not match it (authority / boilerplate words in the
+ // text must not block e.g. `Reisepass.pdf`). A name-only match was already final when the text has no keywords, so the name gains no power it did not have; it only stops text words from blocking it.
+ const named = hits.filter(r => routePatterns(r).some(re => re.test(p[0])));
  return named.length === 1 ? { route: named[0]!, byFilename: true } : null;
 }
+/** Why a file routed (or conflicted) in Tier 1: per route, the keywords that matched in the file name and in the text (sanitized, <= 40 chars). Diagnostics for local CLI output only: never log, history or notification content. */
+export interface RuleTrace { matches: { route: string; name: string[]; text: string[] }[]; result: string }
+const keyword = (s: string) => s.normalize('NFC').replace(/[^\p{L}\p{N} .&_-]/gu, '?').replace(/\s+/g, ' ').slice(0, 40);
+export function explainRules(filename: string, text: string, config: Config): RuleTrace {
+ const [name, body] = parts(filename, text);
+ const found = (res: RegExp[], s: string) => [...new Set(res.flatMap(re => { const m = re.exec(s); return m ? [keyword(m[0])] : []; }))].slice(0, 3);
+ const matches = config.routes.map(r => ({ route: r.id, name: found(routePatterns(r), name), text: found(routePatterns(r), body) })).filter(m => m.name.length || m.text.length);
+ const hit = ruleMatch(filename, text, config);
+ return { matches, result: hit ? `${hit.byFilename ? 'rule_match_filename' : 'rule_match'}:${hit.route.id}` : matches.length > 1 ? 'conflict' : 'no_match' };
+}
+export const formatRuleTrace = (t: RuleTrace) => `${t.matches.map(m => `${m.route}[${m.name.length ? `name: ${m.name.join(', ')}` : ''}${m.name.length && m.text.length ? '; ' : ''}${m.text.length ? `text: ${m.text.join(', ')}` : ''}]`).join(' ') || 'no rule keywords'} => ${t.result}`;
 export const heuristics = (filename: string, text: string, config: Config): Route | null => ruleMatch(filename, text, config)?.route ?? null;
 /** `lockedRoute`: the route is already decided by a rule; the model may only fill in date/sender. */
 export type ModelCall = (filename: string, text: string, config: Config, lockedRoute?: string | null) => Promise<unknown>;
