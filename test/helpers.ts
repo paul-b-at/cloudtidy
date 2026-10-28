@@ -38,4 +38,4 @@ export async function tree(dir: string, prefix = ''): Promise<string[]> {
 /** Replaces a pre-created bucket with a symlink (the fixture creates all buckets up front). */
 export async function swapForSymlink(sb: Sandbox, bucket: string, target: string) { await rm(join(sb.root, bucket), { recursive: true }); await symlink(target, join(sb.root, bucket)); }
 /** Entries of `_Inbox` except the (pre-created, `init`-made) `Needs_Review` folder. */
-export const inboxFiles = async (sb: Sandbox) => (await readdir(sb.inbox)).filter(n => n !== 'Needs_Review');
+export const inboxFiles = async (sb: Sandbox) => (await readdir(sb.inbox)).filter(n => n !== 'Needs_Review').sort(); // sorted: APFS lists entries in hash order
