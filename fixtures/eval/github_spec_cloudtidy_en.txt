@@ -1,0 +1,4 @@
+Design spec: file organiser
+Repository: github.com/example/organiser
+Architecture: a watcher feeds a classifier; moves are journaled before they happen.
+Open question: how to store the state schema.

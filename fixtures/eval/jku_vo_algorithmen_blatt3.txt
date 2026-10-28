@@ -1,0 +1,4 @@
+JKU Linz - Institut für Algorithmen
+VO 123.456 Algorithmen und Datenstrukturen
+Übungsblatt 3: Sortieren und Suchen
+Abgabe bis 12.11.2026, 23:59 Uhr (Kusss)

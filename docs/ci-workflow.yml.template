@@ -1,0 +1,45 @@
+# Copy to .github/workflows/ci.yml with credentials that are allowed to write workflows
+# (the GitHub connector used to publish this branch cannot create files under .github/workflows).
+name: CI
+# Push to main + every pull request: a PR branch is tested once (as a pull_request), not twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      # Side-effect-free: renders the LaunchAgent plist and nothing else.
+      - run: bun src/cli.ts install --print --bun "$(command -v bun)" >/dev/null
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.2
+      # The same suite on macOS: exercises renamex_np(RENAME_EXCL), APFS case-insensitivity and the real plist/launchd paths that Linux cannot.
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: xcrun --sdk macosx swiftc --version && xcrun --sdk macosx --show-sdk-version
+      - run: bash scripts/build-helpers.sh
+      - run: codesign --verify --verbose=2 bin/classify bin/ocr
+      # Smoke test only: proves the binary launches and links FoundationModels. Hosted VMs are not expected to have
+      # Apple Intelligence, so a failure here is informational. Build-only (plus bun test) is the gate.
+      - run: ./bin/classify --check </dev/null
+        continue-on-error: true

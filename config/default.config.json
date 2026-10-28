@@ -1,0 +1,192 @@
+{
+  "version": 1,
+  "root": "~/Library/Mobile Documents/com~apple~CloudDocs",
+  "allowNonICloudRoot": false,
+  "classifier": "./bin/classify",
+  "ocr": "./bin/ocr",
+  "timeoutMs": 60000,
+  "stateDir": "~/Library/Application Support/cloudtidy",
+  "logDir": "~/Library/Logs/cloudtidy",
+  "blocklist": [],
+  "debounceMs": 3000,
+  "stabilityRetries": 2,
+  "emptyGraceMinutes": 10,
+  "classifierRetries": 1,
+  "lockWaitMs": 30000,
+  "maxRunSeconds": 300,
+  "naming": {
+    "datePrefix": false
+  },
+  "daemon": {
+    "apply": false,
+    "notify": true,
+    "intervalSec": 120
+  },
+  "model": {
+    "maxDeferHours": 24
+  },
+  "knownSenders": [
+    {
+      "name": "Drei",
+      "aliases": [
+        "Hutchison Drei Austria",
+        "Hutchison Drei"
+      ],
+      "commonWord": true
+    },
+    {
+      "name": "A1",
+      "aliases": [
+        "A1 Telekom Austria",
+        "A1 Telekom"
+      ]
+    },
+    {
+      "name": "Magenta",
+      "aliases": [
+        "Magenta Telekom",
+        "T-Mobile Austria"
+      ],
+      "commonWord": true
+    },
+    {
+      "name": "Wien Energie",
+      "aliases": []
+    },
+    {
+      "name": "ÖBB",
+      "aliases": [
+        "Österreichische Bundesbahnen",
+        "ÖBB-Personenverkehr"
+      ]
+    },
+    {
+      "name": "Wiener Linien",
+      "aliases": []
+    },
+    {
+      "name": "Wiener Netze",
+      "aliases": []
+    },
+    {
+      "name": "Wiener Wohnen",
+      "aliases": []
+    },
+    {
+      "name": "EVN",
+      "aliases": []
+    },
+    {
+      "name": "Verbund",
+      "aliases": [],
+      "commonWord": true
+    },
+    {
+      "name": "Wiener Städtische",
+      "aliases": []
+    },
+    {
+      "name": "UNIQA",
+      "aliases": []
+    },
+    {
+      "name": "Generali",
+      "aliases": []
+    },
+    {
+      "name": "Allianz",
+      "aliases": [
+        "Allianz Versicherung",
+        "Allianz Versicherungs AG",
+        "Allianz Versicherungs-AG",
+        "Allianz Elementar"
+      ],
+      "commonWord": true
+    }
+  ],
+  "routes": [
+    {
+      "id": "uni",
+      "folder": "01_Uni",
+      "description": "University coursework, lectures and exercises",
+      "rename": false,
+      "patterns": [
+        "VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU"
+      ]
+    },
+    {
+      "id": "invoices",
+      "folder": "02_Admin & Finanzen/Rechnungen",
+      "description": "Invoices and payment requests",
+      "rename": true,
+      "docType": "Rechnung",
+      "patterns": [
+        "Rechnung(?:s\\p{L}*|en)?|Invoices?|IBAN|ATU\\d{8}|Betrag|Beträge|Zahlungsziel"
+      ]
+    },
+    {
+      "id": "contracts",
+      "folder": "02_Admin & Finanzen/Verträge",
+      "description": "Contracts and insurance policies",
+      "rename": true,
+      "docType": "Vertrag",
+      "patterns": [
+        "Vertrag(?:s\\p{L}*|e|en)?|(?:Miet|Kauf|Arbeits|Dienst|Werk)vertrag(?:s\\p{L}*)?|Polizzen?|\\p{L}*(?<!sozial)versicherung(?!s?(?:nummer|daten))(?:s\\p{L}*)?"
+      ]
+    },
+    {
+      "id": "bank",
+      "folder": "02_Admin & Finanzen/Bank",
+      "description": "Bank statements and account documents (Kontoauszug, Bank statement); not invoices, receipts or tax letters",
+      "rename": false,
+      "patterns": [
+        "Kontoauszug|Kontoauszüge|Bank\\s?statement"
+      ]
+    },
+    {
+      "id": "tax",
+      "folder": "02_Admin & Finanzen/Steuern",
+      "description": "Tax documents: Finanzamt letters, Steuerbescheid, Einkommensteuer, Arbeitnehmerveranlagung, Lohnzettel (L16)",
+      "rename": false,
+      "patterns": [
+        "Finanzamt|Steuerbescheid|Einkommensteuer\\p{L}*|Arbeitnehmerveranlagung|Lohnzettel|L16"
+      ]
+    },
+    {
+      "id": "receipts",
+      "folder": "02_Admin & Finanzen/Belege",
+      "description": "Shop receipts and payment confirmations (Kassabon, Quittung, Beleg, Receipt); not invoices that ask for payment",
+      "rename": false,
+      "patterns": [
+        "Kassenbon|Kassabon|Quittung(?:en)?|Belege?|Receipts?"
+      ]
+    },
+    {
+      "id": "admin",
+      "folder": "02_Admin & Finanzen",
+      "description": "Other administrative mail: authorities, social insurance (SVS, ÖGK), insurance letters, official notices; not bank, tax, receipts, invoices or contracts",
+      "rename": false,
+      "patterns": []
+    },
+    {
+      "id": "dev",
+      "folder": "03_Projekte & Dev",
+      "description": "Software projects and technical specifications",
+      "rename": false,
+      "patterns": [
+        "github\\.com|repositor(?:y|ies)|architecture|schema"
+      ]
+    },
+    {
+      "id": "personal",
+      "folder": "04_Persönlich",
+      "description": "Personal, travel, identity and health documents",
+      "rename": false,
+      "patterns": [
+        "Reisepass|Personalausweis|Führerschein|Geburtsurkunde|Meldezettel|Staatsbürgerschaftsnachweis",
+        "Arztbrief|Befundbericht|Entlassungsbrief|e-card|Krankenschein",
+        "Flugticket|Boarding\\s?Pass|Bordkarte|Flugbuchung"
+      ]
+    }
+  ]
+}

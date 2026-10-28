@@ -1,0 +1,3 @@
+Lecture 5 - Graph algorithms
+Breadth-first search, Dijkstra, spanning trees. Homework: prove that BFS finds shortest paths in unweighted graphs.
+Next week: dynamic programming.

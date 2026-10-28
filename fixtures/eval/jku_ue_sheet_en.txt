@@ -1,0 +1,4 @@
+Johannes Kepler University (JKU) - Exercise sheet 4
+UE 345.678 Introduction to Databases
+Task 1: Normalise the tables to 3NF. Task 2: write the SQL queries.
+Deadline: 20 November 2026

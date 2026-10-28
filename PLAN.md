@@ -1,158 +1,89 @@
-# cloudtidy — Implementation Plan
+# cloudtidy — Apple Foundation Models implementation plan
 
-Source spec: [cloudtidy — semantic iCloud organizer](https://app.notion.com/p/b7111c0ecd3d4542aacb7044e1de4e3d) (Notion, status: Planned).
+Updated after the safety and Notion-conformance review fixes (round 6). Source: [Notion project](https://app.notion.com/p/b7111c0ecd3d4542aacb7044e1de4e3d).
 
-cloudtidy is a local-first Bun + TypeScript CLI that a macOS LaunchAgent wakes whenever `iCloud Drive/_Inbox` changes. For each file it extracts text (PDF text layer or on-device Vision OCR), classifies it with a regex heuristics tier and a local-LLM fallback tier, renames it according to type, and moves it into one of the top-level buckets without ever overwriting anything.
+## Approved direction
 
-## Locked decisions (from the spec)
+- Bun + strict TypeScript orchestration, small native Swift helpers.
+- Apple Foundation Models **on-device only**; supersedes the former Gemma/Qwen default. No cloud or model-server fallback.
+- Inbox first; retain the existing top-level taxonomy. Do not touch native app containers or `_Archiv`.
+- Invoice/contract renaming is type-dependent; keep university/code filenames unchanged.
+- Test and review dry runs before any autonomous file operation.
 
-- **Naming is type-dependent.** Invoices and contracts become `YYYY-MM-DD_Sender.pdf` (e.g. `2026-10-12_Drei-Rechnung.pdf`); uni documents, code and assets keep their original name.
-- **LLM backend is local only** (Ollama or llama.cpp on the M4 Pro, Gemma / Qwen). No document text ever leaves the machine.
-- **Inbox first.** v1 only processes `_Inbox`. The sweep over existing loose files is Phase 4.
-- **Runtime:** Bun + strict TypeScript. **Trigger:** `launchd` `WatchPaths`.
+## Increment 1 — read-only classifier (done, pending Mac verification)
 
-## Taxonomy
+Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR extraction, rules + schema-constrained Swift classifier, strict validation, review fallback, `doctor`, mocked tests, CI template.
 
-Root: `~/Library/Mobile Documents/com~apple~CloudDocs/`
+## Increment 2 — real-device verification (PENDING: needs the M4 Pro)
 
-| Bucket | Subfolders (proposed) |
+- Build helpers with Xcode 26+, run `doctor`, `bin/classify --check`.
+- `eval` on ≥ 20 representative German/English documents with labels: accuracy, review rate, cold/warm latency (tooling implemented; numbers are not). Naming is only shown as a proposed name per file, not scored.
+- `bun run eval:fixtures` first, right after the helper build (28 synthetic DE/EN documents incl. 7 prompt-injection ones; exit 0 required: 1 = unsafe output / successful injection, 2 = documents not evaluated), then the 20 real documents.
+- Prompt-injection text, OCR-only scans, refusals/guardrails, context overflow, offline use.
+- Model reachable from a logged-in-user LaunchAgent (`status` shows it); TCC/Full Disk Access for `bun`.
+
+## Increment 3 — safe ingestion and moves (implemented, tested on Linux)
+
+- One shared stability debounce; unstable and empty files are *pending* with a reason (empty past a grace period → review); skips dotfiles, `.icloud` placeholders, partial downloads, symlinks, folders.
+- PID lock with stale detection; content-hash decision cache (idempotent rescans); bounded classifier retries.
+- Realpath containment, symlink-component rejection, blocklist (`_Archiv`, app containers, `~` names).
+- Atomic no-clobber same-volume moves (exclusive rename via `bun:ffi`), `(n)` suffixes, duplicate → review, EXDEV → review (never copy+delete); source revalidation before the move.
+- Append-only audit history with a write-ahead journal (fsync'd intent/commit/abort + crash reconciliation) and hash-verified `undo` (preview by default); undo holds in their own store.
+- The mover never creates ANY folder (bucket, sub-folder or `_Inbox/Needs_Review`): a missing destination → review with `folder_missing:<relative path>`; a missing `Needs_Review` → the file stays in `_Inbox` and the run reports an error. `init [--yes]` creates the full taxonomy; `doctor` checks all of it. Apply modes only run inside iCloud Drive unless `allowNonICloudRoot`.
+- Deterministic naming first (labelled issue date; known senders matched case-sensitively, ordinary-word senders such as Drei/Magenta/Verbund/Allianz only with a company suffix or alone on a letterhead line; a stated `Absender:` line beats a bare hit; look-alike senders rejected by a Latin-letters allowlist); the model only fills missing date/sender with the route locked, and its values are used only when found in the text (protocol v2: the model never supplies a name).
+- Transient model failures defer files in `_Inbox` as pending (backoff 5–60 min). Review only after `model.maxDeferHours` since the first **apply-mode** attempt, ≥ 3 apply-mode attempts and a final failed attempt in the current run (dry-runs never start the clock); a per-run circuit breaker limits the cost of a hung model. Real helper calls for that file in that run and the file's own extraction timeouts count as attempts (a busy final call is an attempt but never a review); files answered by an open breaker count nothing, and an expired file bypasses the breaker for exactly one real call (no retries). Definite failures review immediately with their specific reason (`model_refusal`, `model_guardrail`, `model_unsupported_language`, `model_context_overflow`, `model_invalid_output`, …), except on a rule hit: the rule's route and the original name are kept and the naming reason is recorded.
+- Bounded runs: `maxRunSeconds` (default 300; 60–3600) is checked before each file; files not started are left untouched and reported in one line; worst-case lock hold = budget + one file's maximum (shown by `status`/`doctor`). Quiet daemon log: a run with nothing to sort is one line; skipped/held files are only counted (`--verbose` lists them). Previews show `folder_missing:<path>` reviews like `--apply`.
+- State files are validated entry by entry (`pending.json`, `held.json`, cache); a failed rollback is journaled (never an unjournaled file); logs from launchd are rotated by size (5 MB × 3).
+- `run`, `review`, `history`, `undo`, `sweep` (preview + explicit confirmation; never from the daemon).
+
+## Increment 4 — daemon and polish (implemented, pending Mac verification)
+
+- `install`/`uninstall`/`status`: LaunchAgent with `WatchPaths` + periodic `StartInterval`, absolute stable paths, `install --print`.
+- Daemon is read-only unless `daemon.apply: true`.
+- Notifications (kind/counts/folders only) via `osascript` argv: `Sorted invoice into 02_Admin & Finanzen`, or a batch line.
+- Stable bun path in the plist (never a versioned Cellar path), minimal PATH, absolute `pdftotext`; `doctor` probes `RENAME_EXCL` on the iCloud volume and warns about a stale plist.
+- Not implemented: iCloud placeholder download (`brctl`), non-Mac installs.
+
+## Mapping to the Notion plan
+
+| Notion phase | Status here |
 | --- | --- |
-| `01_Uni` | (flat; optional per-course subfolders later) |
-| `02_Admin & Finanzen` | `Rechnungen`\*, `Verträge`\*, `Steuer`, `Bank` |
-| `03_Projekte & Dev` | (flat) |
-| `04_Persönlich` | `Gesundheit`, `Reisen`, `Dokumente` |
-| `_Archiv` | never written by the daemon |
-| `_Inbox` | watched dropzone; `_Inbox/Needs_Review/` for low-confidence items and `Needs_Review/duplicates/` for exact duplicates |
+| 0 Scaffolding, dry-run CLI, collisions | implemented (Linux-tested) |
+| 1 Extraction, Vision OCR, Tier-1 rules | implemented: whole-word Unicode rules, instant final rule hits, `bank`/`tax`/`receipts` routes (`admin` root is model-only); "20 real sample files" pending (Mac) |
+| 2 Foundation Models classifier | implemented against a doc-based stub (Swift 5 and 6 compile, exit-code matrix); real compile/inference, 20-doc dry-run review, LaunchAgent model access and Gemma comparison (optional) pending (Mac) |
+| 3 launchd, 3 s debounce, notifications | implemented (one shared 3 s debounce, `Sorted invoice into 02_Admin & Finanzen`-style notifications); installed behaviour and the iPhone → Mac flow pending (Mac) |
+| 4 sweep, date-prefix option, audit log | implemented (date prefix for `04_Persönlich`, `02_Admin & Finanzen` and its Bank/Steuern/Belege sub-folders, off by default; JSONL write-ahead audit log) |
 
-\* Named in the spec. The other subfolders are proposals and live in config, so they can change without code changes.
+## Deviations from the Notion plan (see README)
 
-The LLM may only pick a subcategory from the configured list. Letting it make up folder names would grow the folder tree out of control.
+- Protocol v2 replaces `suggestedName` with `documentDate`/`sender` and adds an optional `lockedRoute`; transient failures use their own exit code (4 for rate limited/concurrent requests).
+- Tier-1 patterns for `personal` are an addition (Notion lists four routes' patterns); anything outside them goes to the model/review. The model's guardrails may refuse sensitive documents; structured output cannot use permissive guardrails.
+- Admin documents are split into sub-folders (Round 7, decided by Paul): `bank` → `02_Admin & Finanzen/Bank`, `tax` → `…/Steuern`, `receipts` → `…/Belege` (names kept, conservative whole-word patterns), and `admin` stays the `02_Admin & Finanzen` root with **no patterns** (model-only: authorities, SVS/ÖGK, official notices). Overlapping matches (two routes) go to the model. `init --yes` creates the three new folders for an existing setup; configs are replaced, not merged (see README upgrade note).
+- Patterns match whole words (Unicode aware) instead of free substrings, so `Betrag` no longer fires on `Bankbetrag`; German compounds that should match are listed explicitly.
+- A rule hit is final and instant (no model check of the route). Notion's "model must confirm" step is replaced by "exactly one route matches"; the cost is that hidden document text can steer a rule route (accepted risk, documented).
+- Invoice/contract naming does not need the model when the labelled date and a known or stated sender (`Absender:`) are in the text; the model is only asked for what is missing (route locked). A rule hit is therefore instant for routing; naming latency is reported separately by `eval`.
+- Files are never put into `Needs_Review` just because the model is temporarily unavailable: they wait in `_Inbox` as pending and are only reviewed after `model.maxDeferHours` (24 h) of *apply-mode* attempts, at least 3 of them, and one more failed attempt (see README step 7).
+- cloudtidy does not create any folder while moving (`folder_missing:<path>` → review); `cloudtidy init` creates the taxonomy (buckets, sub-folders, `_Inbox/Needs_Review`) explicitly, after iCloud has synced. Notion's "sub-folders `Rechnungen/`, `Verträge/` are created" is therefore done by `init`, not on demand.
+- Defaults `daemon.intervalSec: 120` and `stabilityRetries: 2` (shared window) replace the original 600 s / 0 so that "sorted within seconds" holds for files that are still being written and leftover waits stay about two minutes.
+- The `Sozialversicherung…` compound, `Versicherungsnummer` and `Versicherungsdaten…` are excluded from the contracts rule; senders that are only stop-words (`Die`, `Re`, `An`, `Sehr`, …) never count.
+- `undo` previews unless `--apply`.
+- Route IDs (`uni`, `invoices`, `contracts`, `bank`, `tax`, `receipts`, `admin`, `dev`, `personal`) replace the Notion JSON's category/subcategory pair; each ID maps to one configured folder.
+- Notifications are single-file (`Sorted invoice into 02_Admin & Finanzen`) or batched counts (`Sorted 2 files (01_Uni 1, 02_Admin & Finanzen 1) · 1 to Needs_Review`); never filenames.
+- Moves, sweep, undo and the LaunchAgent are implemented although the Notion page still describes the first increment as read-only; the review gate before `run --apply` / `daemon.apply` is a documented process, not enforced in code.
 
-## Repository layout
+## Accepted and documented residual risks
 
-```text
-cloudtidy/
-  src/
-    cli.ts               # entry: `run`, `scan --dry-run`, `sweep`, `undo`, `install`, `doctor`
-    config.ts            # load + validate config (zod), defaults, path resolution
-    paths.ts             # iCloud root, bucket resolution, container blocklist guard
-    scanner.ts           # list candidate files in _Inbox (non-recursive)
-    stability.ts         # .icloud stub detection, size/mtime stability check, download trigger
-    extract/
-      index.ts           # dispatch by file type
-      pdf.ts             # text layer via pdftotext (fallback: unpdf)
-      text.ts            # .txt/.md/.csv/.json head read
-      ocr.ts             # spawn the Swift Vision helper
-    classify/
-      heuristics.ts      # Tier 1: weighted regex rules -> {category, sub, score}
-      llm.ts             # Tier 2: Ollama /api/chat with JSON-schema `format`
-      index.ts           # routing: tier 1 -> tier 2 -> Needs_Review
-    naming.ts            # type-dependent rename, date + sender extraction, sanitizing
-    mover.ts             # collision-safe move, lock, history append
-    history.ts           # JSONL audit log + undo
-    notify.ts            # osascript `display notification`
-    log.ts               # structured logging to ~/Library/Logs/cloudtidy/
-  helpers/
-    ocr.swift            # Vision + PDFKit OCR helper, compiled with swiftc
-  launchd/
-    at.paul.cloudtidy.plist.tmpl
-  config/
-    default.config.json
-  test/
-    fixtures/            # anonymized sample PDFs, images, text files
-    *.test.ts
-```
+F-08 directory-component TOCTOU (no `openat` in Bun); F-16 steerable rules (a rule hit is final); F-24 `daemon.apply` on one Mac only; F-01 iCloud's `RENAME_EXCL` support can only be proven by `doctor` on the Mac; stale-lock takeover; the transient `.cloudtidy-probe-*` folder in `_Inbox` while `doctor` runs; TCC/Full Disk Access is per bun path (with Homebrew the resolved Cellar binary, so `brew upgrade bun` can drop the grant); macOS 14+ dataless files under their real name are not detected (Mac-only, F-07).
 
-Runtime files live outside the repo:
+## Acceptance gate
 
-- Config: `~/.config/cloudtidy/config.json`, which overrides `config/default.config.json`.
-- History: `~/Library/Application Support/cloudtidy/history.jsonl`.
-- Logs: `~/Library/Logs/cloudtidy/cloudtidy.log`. The plist's stdout and stderr also go there.
+No claim of production readiness until the helpers have compiled and run on the target Mac, the 20-document evaluation has been reviewed, and the LaunchAgent has been observed to reach the model and read `_Inbox`. CI is build/mock testing, not model-quality validation.
 
-## Phases
+The older detailed plan is preserved at `docs/legacy-plan-2026-10-07.md` as historical context, not current backend guidance.
 
-### Phase 0 — Scaffolding and dry-run CLI
+## Known follow-ups (round 6 reviews, not fixed)
 
-1. `bun init`, strict `tsconfig` (`strict`, `noUncheckedIndexedAccess`), Biome or ESLint, and `bun test`.
-2. `config.ts`: a zod schema for the root path, buckets, subfolders, blocklist, thresholds and LLM endpoint/model. Every path can be overridden so tests can point the root at a temp directory.
-3. `paths.ts` safety guard: one `assertWritable(target)` that every move passes through. It throws unless `target` resolves (after `realpath` and Unicode NFC normalization) inside one of the configured buckets or `_Inbox/Needs_Review`. It also hard-rejects anything under app containers (`com~apple~*` siblings, `Obsidian`, `Shortcuts`, `Pages`, `Keynote`, `Numbers`, `Goodnotes`, …).
-4. `scanner.ts`: list only the direct children of `_Inbox`. Skip dotfiles, `*.icloud` stubs, directories (including `Needs_Review`) and partial-download markers.
-5. `mover.ts`: a no-clobber move. Check whether the target exists, and on collision append ` (2)`, ` (3)`, … before the extension. If the bytes are identical (same size and sha256), treat it as a duplicate: move the source to `_Inbox/Needs_Review/duplicates/` and record it in the history log, so it can still be undone. Never delete. Use a process lockfile so a manual run and the daemon never run at the same time.
-6. `cloudtidy scan --dry-run` prints a table of source, target and reason, and touches nothing.
-
-**Done when** the dry run against a temp-dir fixture tree prints the right targets, and the tests prove that a collision never overwrites and that a blocklisted target throws.
-
-### Phase 1 — Extraction and Tier 1 heuristics
-
-1. `extract/pdf.ts`: `pdftotext -l 2 file -` (poppler from Homebrew) for the first two pages, with `unpdf` as the pure-JS fallback. Avoid `pdf-parse`: the 1.x package runs debug code on import under Bun.
-2. `helpers/ocr.swift`: one small binary that takes a file path.
-   - Images: `VNRecognizeTextRequest`, `.accurate`, languages `de-DE` and `en-US`.
-   - PDFs with no text layer (scans): render the first 2 pages with PDFKit, then OCR them.
-   - Text goes to stdout. Build it with `swiftc -O` during `cloudtidy install`, because macOS has no built-in Vision CLI.
-3. `extract/index.ts`: dispatch on extension and magic bytes, and cap text at about 4 kB. If a PDF's text layer comes back nearly empty, fall back to OCR.
-4. `classify/heuristics.ts`: rules are `{pattern, field: "text" | "filename", category, sub?, weight}`. Sum the weights per category. The result is **definite** only when the top score is at least a threshold *and* beats the runner-up by a margin. This matters because single keywords like `IBAN` or `schema` show up in unrelated documents. Starting rules:
-   - Uni: `\b(VL|VO|UE|KV|PR|SE|KS|PS)\s?\d{3}\.\d{3}\b`, `JKU|Johannes Kepler`, course-number list from config
-   - Rechnungen: `Rechnung|Invoice|Zahlungsziel|Rechnungsnummer`, `ATU\d{8}`, `IBAN` (low weight)
-   - Verträge: `Vertrag|Polizze|Versicherung|Mietvertrag|Kündigung`
-   - Dev: file extensions (`.ts`, `.py`, `.csv`, `.ipynb`, `.drawio`) at low weight, `github\.com`. Extensions alone must not decide: bank statement exports are `.csv` too, and text matches like `IBAN` or bank names should outvote them.
-   - Persönlich: `Reisepass|Personalausweis|Boarding|Flugticket|Befund|Arzt`
-5. `naming.ts`: for `Rechnungen` and `Verträge`, find the document date (prefer invoice or contract date labels, then the first `dd.mm.yyyy` / `yyyy-mm-dd` match, then the file's mtime). Take the sender from a known-sender map in config (`Drei`, `A1`, `Magenta`, `ÖGK`, …), or fall back to the Tier 2 `suggestedName`. Sanitize the name: strip `/:`, control characters and leading dots (a leading dot would turn the file into a dotfile the scanner skips), collapse whitespace, keep umlauts, and cap the length at about 120 characters.
-
-**Done when** about 20 real sample files are run through `scan --dry-run` and checked by hand. Tier 1 should resolve the obvious ones in under 10 ms each, with zero wrong targets. It is fine for unclear files to be marked "ambiguous".
-
-### Phase 2 — Tier 2 local LLM
-
-1. `classify/llm.ts`: `POST http://localhost:11434/api/chat` with `format` set to a JSON schema whose `category` and `subcategory` are **enums** built from config, plus `suggestedName: string` and `confidence: number`. Use `temperature: 0`, the first 1,000 characters of text plus the original filename, and `keep_alive` so the model stays loaded between runs. Allow about 60 s for a call that has to cold-load the model and 15 s once it's warm.
-2. Validate the response with zod. If it's invalid, or the server is down, or `confidence` is below the threshold (start at 0.7), the file goes to `_Inbox/Needs_Review/`. Never guess.
-3. `cloudtidy doctor` checks that Ollama is reachable, the model is pulled, the OCR helper is built, `pdftotext` is present and the plist is loaded.
-4. Benchmark: run the fixture set through `gemma` and `qwen2.5` and record latency and accuracy in `test/BENCHMARK.md`. Choose the default model from that.
-
-**Done when** the Tier 2 path sorts the ambiguous fixtures correctly or routes them to Needs_Review, in under about 2 s each with the model warm. Record the actual numbers in `test/BENCHMARK.md`. The spec's 300 ms estimate is optimistic for a 12B model once prompt processing and JSON generation are counted.
-
-### Phase 3 — launchd daemon and notifications
-
-1. `bun build --compile src/cli.ts --outfile ~/.local/bin/cloudtidy` gives a single stable binary. A fixed path also means macOS remembers its file-access permission (TCC grant) between runs.
-2. `cloudtidy install` renders the plist template and writes it to `~/Library/LaunchAgents/at.paul.cloudtidy.plist`. The plist sets `ProgramArguments` to `[binary, "run"]`, `WatchPaths` to the `_Inbox` path, `ThrottleInterval` to 5, `StartInterval` to 300 as a backstop rescan, and log paths for stdout and stderr. The command then runs `launchctl bootstrap gui/$UID …`, and `uninstall` reverses it.
-3. `run` semantics: `WatchPaths` fires when the directory changes but doesn't say which file, so `run` rescans all of `_Inbox` every time. It has to be idempotent. The daemon's own moves out of `_Inbox` fire `WatchPaths` again, and the lockfile plus the "nothing left to do, exit" path keep that loop harmless. If the lock is held, `run` waits for it (timeout about 60 s) instead of exiting, so a trigger is never dropped.
-4. Debounce and stability: a file is ready when it isn't a stub and its size and mtime are unchanged across two checks 3 s apart. `WatchPaths` does not fire while a file inside `_Inbox` is still being written, so `run` keeps polling unstable files itself, every 3 s for up to about 60 s. Anything still unstable after that is left for the `StartInterval` rescan. If a `.name.icloud` stub is seen, run `brctl download <path>` and move on. The stub being replaced by the real file is a directory change, so it fires another trigger.
-5. `notify.ts`: `osascript -e 'display notification "Sorted Rechnung into 02_Admin & Finanzen" with title "cloudtidy"'`. Batch the messages when several files arrive at once.
-
-**Done when** a PDF saved from the iPhone Share Sheet into `_Inbox` is sorted on the Mac within about 10 s after sync, and the notification shows up.
-
-### Phase 4 — Drive sweep, history and polish
-
-1. `history.ts`: every move appends `{ts, from, to, tier, category, confidence, sha256}` to the JSONL history file.
-2. `cloudtidy undo [--last N | --id]` moves files back, but only if they are still at the recorded target with the same hash. This is a cheap safety net, and it's worth having before the sweep.
-3. `cloudtidy sweep [--dry-run]` takes loose files in the iCloud Drive root (never inside buckets, `_Archiv` or app containers). It shows the proposed table, and then the user confirms per item or in bulk.
-4. Optional `--date-prefix` renaming for other categories, behind a config flag.
-
-**Done when** a dry-run sweep of the real drive root shows a reviewed plan, the confirmed moves have been applied, and `undo --last` restores them.
-
-## Testing strategy
-
-- Unit tests (`bun test`): heuristics scoring, naming and date parsing (German formats), sanitizing, collision suffixes, the blocklist guard (including NFD and NFC look-alike paths and symlinks), and config validation.
-- Integration tests: a temp-dir fake iCloud root built from `test/fixtures`. Run `run` end to end with Tier 2 mocked (a fake HTTP server) and assert the final tree plus the history file.
-- Manual: the cross-device Share Sheet flow and the first-run permission prompts. Neither can be automated in CI.
-- CI: GitHub Actions on `macos-latest` for typecheck, lint, tests and building the Swift helper.
-
-## Risks and gaps in the spec
-
-| Risk | Mitigation |
-| --- | --- |
-| `WatchPaths` gives no file list and refires on the daemon's own moves | Full idempotent rescan, a lockfile, and early exit when idle |
-| Files stuck in `_Inbox`: no trigger while a file is still being written, or when the lock is held | In-process stability polling (up to about 60 s), wait for the lock instead of exiting, `StartInterval` 300 s backstop rescan |
-| macOS has no Vision CLI | Ship and compile `helpers/ocr.swift` (Vision + PDFKit) |
-| Scanned PDFs have no text layer | Detect near-empty text and fall back to OCR on rendered pages |
-| `.icloud` stubs and half-synced files | Skip stubs, call `brctl download`, check size and mtime for stability |
-| macOS file-access permission (TCC) for a launchd job reading `~/Library/Mobile Documents` | Compiled binary at a fixed path; `doctor` explains how to grant access if a read fails |
-| Unicode normalization (iCloud filenames can be NFD) | NFC-normalize every path before comparing or applying the blocklist |
-| Broad single keywords (`IBAN`, `schema`) misroute files | Weighted scoring with a margin; anything uncertain goes to Tier 2 or Needs_Review |
-| LLM invents categories or folders | JSON-schema enums from config, zod validation, Needs_Review fallback |
-| Ollama not running | Treat as low confidence and send to Needs_Review; `doctor` reports it |
-
-## Open questions
-
-1. Should `01_Uni` get per-course subfolders (e.g. `01_Uni/ML/`) inferred from course numbers, or stay flat for v1?
-2. Ollama or a plain llama.cpp server as the default backend? Ollama's `format` JSON schema is simpler to integrate, and llama.cpp needs a GBNF grammar or its `json_schema` option.
-3. Exact duplicates go to `_Inbox/Needs_Review/duplicates/` by default. Once that has proven reliable, should it switch to deleting them silently?
-4. Should Needs_Review items trigger their own notification, with a "click to open folder" action?
+- L3: a permanently symlinked launchd log warns on every run (~every 2 min) and never rotates; warn once per day or rotate the other file.
+- L4: the time budget is checked only in `plan()`; planning finishes before the first move, so a kill during planning loses the whole pass (safe: moves revalidate). An apply-as-you-go loop would make progress incremental.
+- L8: `sha256File` runs before any per-file timeout, so one huge or iCloud-evicted file can exceed the "lock held ≤ budget + one file" figure printed by `doctor`.
+- Naming (round 6d, known): a lone `Drei`-style line in the first 6 non-empty lines forces that sender (mislabel only); a rejected `Absender:` does not fall through to `Sender:`/`From:`.
