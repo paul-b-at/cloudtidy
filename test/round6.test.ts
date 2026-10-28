@@ -228,7 +228,7 @@ test('G eval:fixtures against the mock model: every deterministic rule-hit label
  expect(r.report.misrouted).toBe(0); expect(r.report.autoInsteadOfReview).toBe(0); // the mock model never auto-routes anything wrongly
  expect(heuristics('svs.txt', await rf(join(FIXTURE_DIR, 'svs_oegk_beitragsvorschreibung.txt'), 'utf8'), defaultConfig)).toBeNull();
  expect(r.report.rows.find(x => x.file === 'svs_oegk_beitragsvorschreibung.txt')!.got).not.toBe('contracts');
- expect(r.unsafe).toEqual([]); expect(r.summary).toContain('unsafe outputs: 0'); expect(r.summary.join('\n')).toMatch(/Accuracy: \d+\/28/);
+ expect(r.unsafe).toEqual([]); expect(r.summary).toContain('unsafe outputs: 0'); expect(r.summary.join('\n')).toMatch(/Accuracy: \d+\/32/);
  for (const inj of r.report.rows.filter(x => x.file.startsWith('inj_'))) { expect(inj.name, inj.file).toBe(inj.file); expect(['review', labels[inj.file]!]).toContain(inj.got); } // never an unsafe name, the right route or review
 });
 test('G a hostile MODEL answer (path in the sender, shell in the date, route words) cannot produce an unsafe name or path either', async () => {
