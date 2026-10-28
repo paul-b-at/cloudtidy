@@ -11,15 +11,15 @@ import { baseJson, defaultConfig as config, model, sandbox } from './helpers';
 const route = (id: string) => config.routes.find(r => r.id === id)!;
 const fx = (name: string) => readFile(join(FIXTURE_DIR, name), 'utf8');
 const says = (id: string) => (async () => ({ version: 2, route: id, documentDate: '', sender: '', needsReview: false })) as never;
-const SVS = 'svs_oegk_beitragsvorschreibung.txt', INJ = 'inj_route_force_nomatch.txt';
+const NOTIZ = 'notiz_unklar.txt', SVS = 'svs_oegk_beitragsvorschreibung.txt', INJ = 'inj_route_force_nomatch.txt';
 
 test('R8 default config: only admin carries evidence, and it never contains the bare words admin / Amt', () => {
  for (const r of config.routes) expect(r.evidence !== undefined, r.id).toBe(r.id === 'admin');
  expect(route('admin').patterns).toEqual([]);
  const ev = routeEvidence(route('admin'));
  expect(ev.length).toBeGreaterThanOrEqual(10);
- for (const t of ['admin', 'admin mode', 'Admin', 'Amt', 'Verwaltung', 'Administrator', 'Behördengang', 'SVSX', 'Bescheidenheit']) expect(ev.some(re => re.test(t)), t).toBe(false);
- for (const t of ['SVS', 'svs Beitrag', 'ÖGK', 'Österreichische Gesundheitskasse', 'Sozialversicherungsanstalt', 'Versicherungsnummer 1234', 'Versicherungsdatenauszug', 'Beitragsvorschreibung', 'Pensionsversicherung', 'AUVA', 'Magistrat Wien', 'Magistratsabteilung 35', 'Bezirkshauptmannschaft Linz', 'Behörde', 'Bescheid', 'Meldeamt', 'Gemeindeamt', 'Stadtamt']) expect(ev.some(re => re.test(t)), t).toBe(true);
+ for (const t of ['admin', 'admin mode', 'Admin', 'Amt', 'Verwaltung', 'Administrator', 'Behördengang', 'SVSX', 'Bescheidenheit', 'Behörde', 'Behörden', 'Bescheid', 'Bescheide', 'Er weiß schon Bescheid']) expect(ev.some(re => re.test(t)), t).toBe(false);
+ for (const t of ['SVS', 'svs Beitrag', 'ÖGK', 'Österreichische Gesundheitskasse', 'Sozialversicherungsanstalt', 'Versicherungsnummer 1234', 'Versicherungsdatenauszug', 'Beitragsvorschreibung', 'Pensionsversicherung', 'AUVA', 'Magistrat Wien', 'Magistratsabteilung 35', 'Bezirkshauptmannschaft Linz', 'Meldeamt', 'Gemeindeamt', 'Stadtamt']) expect(ev.some(re => re.test(t)), t).toBe(true);
 });
 test('R8 the forced-route injection (fixture inj_route_force_nomatch) answered `admin` by the model goes to review: model_route_unverified:admin', async () => {
  const text = await fx(INJ);
@@ -52,7 +52,7 @@ test('R8 eval:fixtures with a model that answers `admin` for everything: the inj
 });
 test('R8 evidence never fires Tier 1 and does not count as a pattern match', () => {
  expect(routePatterns(route('admin'))).toEqual([]);
- for (const t of ['SVS Beitragsvorschreibung', 'Bescheid der Bezirkshauptmannschaft', 'Magistrat Wien Behörde', 'Versicherungsnummer 1234 ÖGK']) expect(heuristics('x.txt', t, config), t).toBeNull();
+ for (const t of ['SVS Beitragsvorschreibung', 'Bescheid der Bezirkshauptmannschaft', 'Magistrat Wien Amt', 'Versicherungsnummer 1234 ÖGK']) expect(heuristics('x.txt', t, config), t).toBeNull();
  expect(heuristics('x.txt', 'Kontoauszug und SVS Bescheid', config)?.id).toBe('bank'); // evidence words next to a real pattern do not create a conflict
  expect(heuristics('x.txt', 'Steuerbescheid 2025', config)?.id).toBe('tax');
 });
@@ -79,4 +79,12 @@ test('R8 config validation of `evidence` (same rules as patterns)', () => {
  const v = validateConfig({ ...baseJson, routes: [{ ...baseJson.routes[0], evidence: ['SVS'] }] });
  expect(v.routes[0]!.evidence).toEqual(['SVS']); expect(validateConfig(baseJson).routes.find(r => r.id === 'uni')!.evidence).toBeUndefined();
  for (const r of config.routes) for (const re of routeEvidence(r)) expect(re.test(''), r.id).toBe(false);
+});
+test('R8 notiz_unklar ("Er weiß schon Bescheid") answered `admin` by the model is not enough: review model_route_unverified:admin; SVS is still accepted', async () => {
+ const text = await fx(NOTIZ);
+ expect(text).toContain('Bescheid'); expect(heuristics(NOTIZ, text, config)).toBeNull();
+ expect(await classify(NOTIZ, text, config, { model: says('admin') })).toMatchObject({ route: null, needsReview: true, reason: 'model_route_unverified:admin' });
+ expect(await classify(SVS, await fx(SVS), config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'model' });
+ const r = await runFixtureEval(config, { model: says('admin') });
+ expect(r.report.rows.find(x => x.file === NOTIZ)!.got).toBe('review'); expect(r.report.rows.find(x => x.file === SVS)!.got).toBe('admin');
 });

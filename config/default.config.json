@@ -179,8 +179,6 @@
         "AUVA",
         "Magistrat(?:s\\p{L}*)?",
         "Bezirkshauptmannschaft",
-        "Behörden?",
-        "Bescheide?",
         "Meldeamt|Gemeindeamt|Stadtamt"
       ]
     },
