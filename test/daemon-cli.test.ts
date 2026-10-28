@@ -119,7 +119,8 @@ test('rules: exactly one matching route is definite; conflicts and no match defe
  expect(heuristics('x.txt', 'UE 123.456', config)?.id).toBe('uni');
  expect(heuristics('JKU_notes.txt', 'x', config)?.id).toBe('uni');
  expect(heuristics('x.txt', 'ATU12345678', config)?.id).toBe('invoices');
- expect(heuristics('x.txt', 'IBAN schema', config)).toBeNull();
+ expect(heuristics('x.txt', 'Rechnung schema', config)).toBeNull(); // conflict invoices/dev
+ expect(heuristics('x.txt', 'IBAN schema', config)?.id).toBe('dev'); // round 10: IBAN alone is no invoice word any more
  expect(heuristics('x.txt', 'VO 123.456 Rechnung', config)).toBeNull();
  expect(heuristics('x.txt', 'nothing here', config)).toBeNull();
 });
@@ -151,7 +152,7 @@ test('protocol v2 parsing is strict', () => {
  expect(validateResult({ ...good, needsReview: true }, config).needsReview).toBe(true);
 });
 test('missing helper fails closed to review; subprocess bounds', async () => {
- expect((await classify('a.txt', 'unclear', { ...config, classifier: '/nonexistent/classify' })).reason).toBe('model_unavailable');
+ expect((await classify('a.txt', 'unclear', { ...config, classifier: '/nonexistent/classify' })).reason).toBe('classifier_helper_missing');
  expect((await checkModel({ ...config, classifier: '/nonexistent/classify' })).reason).toBe('helper_not_built');
  await expect(run(process.execPath, ['-e', 'setTimeout(()=>{}, 10000)'], '', 30)).rejects.toThrow('helper_timeout');
  await expect(run(process.execPath, ['-e', 'process.stdout.write("x".repeat(5000))'], '', 5000, 100)).rejects.toThrow('helper_output_limit');
