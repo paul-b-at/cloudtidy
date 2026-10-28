@@ -61,3 +61,28 @@ test('R10 eval with an always-admin mock model: court + accident report are admi
  expect(got('inj_route_force_nomatch.txt')).toBe('review'); expect(got('notiz_unklar.txt')).toBe('review');
  expect(r.unsafe).toEqual([]); expect(r.report.files).toBe(32);
 });
+test('R10 README procedure: a file given up as deferred_too_long:classifier_helper_missing is not retried by itself; moved back to _Inbox with a working model it is sorted', async () => {
+ const { sandbox } = await import('./helpers'); const { runOnce } = await import('../src/run'); const { rename, writeFile, readdir } = await import('node:fs/promises');
+ const HOUR = 3_600_000, ok = (async () => ({ version: 2, route: 'personal', documentDate: '', sender: '', needsReview: false })) as never;
+ const sb = await sandbox({ model: { maxDeferHours: 24 } }); try {
+  const cfg = { ...sb.config, classifier: '/nonexistent/classify' };
+  await writeFile(join(sb.inbox, 'note.txt'), 'a short unclear note'); let t = 1_000_000_000_000;
+  const run = (c: typeof cfg, m?: never) => runOnce(c, { apply: true, ...(m ? { model: m } : {}), now: () => t, sleep: async () => {} });
+  await run(cfg); t += 30 * HOUR; await run(cfg); t += 2 * HOUR; await run(cfg); t += 2 * HOUR;
+  expect((await run(cfg)).items[0]).toMatchObject({ outcome: 'review', reason: 'deferred_too_long:classifier_helper_missing' });
+  expect(await readdir(sb.review)).toEqual(['note.txt']);
+  t += HOUR; await run(sb.config, ok); expect(await readdir(sb.review)).toEqual(['note.txt']); // not retried automatically
+  await rename(join(sb.review, 'note.txt'), join(sb.inbox, 'note.txt')); t += HOUR;
+  expect((await run(sb.config, ok)).items[0]).toMatchObject({ outcome: 'moved', route: 'personal' });
+  expect(await readdir(sb.review)).toEqual([]);
+ } finally { await sb.cleanup(); }
+});
+test('R10 a Word file whose converted text exceeds 256 KiB goes to review with extraction_failed:textutil:output_limit (not truncated)', async () => {
+ const { mkdtemp, writeFile, chmod, rm } = await import('node:fs/promises'); const { tmpdir } = await import('node:os'); const { extract, ExtractError } = await import('../src/extract');
+ const d = await mkdtemp(join(tmpdir(), 'ct-tu-')), old = process.env.CLOUDTIDY_TEXTUTIL;
+ try {
+  const fake = join(d, 'textutil'); await writeFile(fake, '#!/bin/sh\nhead -c 300000 /dev/zero | tr "\\0" "a"\n'); await chmod(fake, 0o755);
+  const doc = join(d, 'big.docx'); await writeFile(doc, 'x'); process.env.CLOUDTIDY_TEXTUTIL = fake;
+  const err = await extract(doc, config).then(() => null, e => e); expect(err).toBeInstanceOf(ExtractError); expect((err as Error).message).toBe('extraction_failed:textutil:output_limit');
+ } finally { if (old === undefined) delete process.env.CLOUDTIDY_TEXTUTIL; else process.env.CLOUDTIDY_TEXTUTIL = old; await rm(d, { recursive: true, force: true }); }
+});
