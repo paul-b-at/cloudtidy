@@ -44,27 +44,29 @@ export function validateResult(raw: unknown, config: Config): Decision {
  * Tier 1: the route whose patterns match as whole words, only when exactly ONE route matches. A single hit is final (no model check;
  * accepted risk: any text in the document, including hidden text, can steer a rule route). Conflicts and no match go to the model.
  */
-const matchWindow = (filename: string, text: string) => `${filename}\n${text.slice(0, 20000)}`.normalize('NFC'); // patterns are written NFC; HFS-era names / some OCR output are NFD
+// Patterns are written NFC; HFS-era names / some OCR output are NFD. The file name and the text are tested SEPARATELY (never joined into one string), so no pattern can span the boundary
+// (a name ending in `K` + a text starting with 8 digits, or a multi-word course name split between name and text): a route matches when its pattern matches the name OR the text.
+const parts = (filename: string, text: string): [string, string] => [filename.normalize('NFC'), text.slice(0, 20000).normalize('NFC')];
+const anyMatch = (res: RegExp[], [name, body]: [string, string]) => res.some(re => re.test(name) || re.test(body));
 /** A route without `evidence` is always verified; one with `evidence` needs at least one whole-word hit in the file name or the first 20k characters. Never used for Tier 1. */
 export function routeVerified(route: Route, filename: string, text: string): boolean {
  const ev = routeEvidence(route);
  if (!ev.length) return true;
- const input = matchWindow(filename, text);
- return ev.some(re => re.test(input));
+ return anyMatch(ev, parts(filename, text));
 }
 export interface RuleHit { route: Route; byFilename: boolean }
 /**
- * Tier 1 with the filename tiebreak (round 11): the routes whose patterns match the file name + text. Exactly one -> final (`rule_match`).
+ * Tier 1 with the filename tiebreak (round 11): the routes whose patterns match the file name or the text (tested separately). Exactly one -> final (`rule_match`).
  * Several (a conflict) -> if the FILENAME alone matches exactly one of THOSE routes, that route wins (`rule_match_filename`); a filename that
  * matches none or more than one of them leaves the conflict to the model. The tiebreak never picks a route the text does not match.
  * Trade-off: the file name (user-controlled, but also steerable by a sender) now steers conflicts; it cannot create a hit by itself.
  */
 export function ruleMatch(filename: string, text: string, config: Config): RuleHit | null {
- const win = matchWindow(filename, text), hits = config.routes.filter(r => routePatterns(r).some(re => re.test(win)));
+ const p = parts(filename, text), hits = config.routes.filter(r => anyMatch(routePatterns(r), p));
  if (hits.length === 1) return { route: hits[0]!, byFilename: false };
  if (hits.length < 2) return null;
  // Tiebreak: only among the routes the TEXT matches (a route matched by the file name alone never wins this way), and only when the name picks exactly one of them.
- const body = text.slice(0, 20000).normalize('NFC'), name = filename.normalize('NFC');
+ const [name, body] = p;
  const named = hits.filter(r => routePatterns(r).some(re => re.test(body)) && routePatterns(r).some(re => re.test(name)));
  return named.length === 1 ? { route: named[0]!, byFilename: true } : null;
 }

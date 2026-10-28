@@ -2,7 +2,7 @@
 import { test, expect } from 'bun:test';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { classify, heuristics, ruleMatch } from '../src/classifier';
+import { classify, heuristics, routeVerified, ruleMatch } from '../src/classifier';
 import { routePatterns } from '../src/config';
 import { FIXTURE_DIR, runFixtureEval } from '../src/fixture-eval';
 import { defaultConfig as config } from './helpers';
@@ -56,9 +56,9 @@ test('R11 court letter that mentions a university: uni + admin conflict -> model
  expect(await classify('Unterhaltserhöhung 2026.pdf', text, config, { model: never })).toMatchObject({ route: 'admin', tier: 'rule', reason: 'rule_match_filename' });
  expect(await classify('Unterhaltserhöhung 2026.pdf'.normalize('NFD'), text, config, { model: never })).toMatchObject({ route: 'admin', reason: 'rule_match_filename' });
 });
-test('R11 uni: JKU matriculation number K + 8 digits (also K 12345678 and an OCR-lowercase k), course names, Exercise Sheet N; whole words only', async () => {
- for (const t of ['K12345678', 'K 12345678', 'k12345678', 'Matr.Nr. K12345678.', 'Mathematics for AI 2 — Exercise Sheet 7', 'Exercise Sheet7', 'Computational Logic', 'Algorithms and Data Structures', 'Programming in Python', 'Machine Learning and Pattern Classification', 'Machine Learning & Pattern Classification', 'Statistics for AI', 'Introduction to AI', 'Introduction to Artificial Intelligence', 'Formal Languages']) expect(hit('uni', t), t).toBe(true);
- for (const t of ['K1234567', 'K123456789', 'AK12345678', '12345678', 'K-12345678', 'Statistics for AIs', 'Introduction to AIDS', 'Formal Language']) expect(hit('uni', t), t).toBe(false);
+test('R11 uni: JKU matriculation number K + 8 digits (no space; an OCR-lowercase k counts), course names, Exercise Sheet N; whole words only', async () => {
+ for (const t of ['K12345678', 'k12345678', 'Matr.Nr. K12345678.', 'Mathematics for AI 2 — Exercise Sheet 7', 'Exercise Sheet7', 'Computational Logic', 'Algorithms and Data Structures', 'Programming in Python', 'Machine Learning and Pattern Classification', 'Machine Learning & Pattern Classification', 'Statistics for AI', 'Introduction to AI', 'Introduction to Artificial Intelligence', 'Formal Languages']) expect(hit('uni', t), t).toBe(true);
+ for (const t of ['K 12345678', 'K1234567', 'K123456789', 'AK12345678', '12345678', 'K-12345678', 'Statistics for AIs', 'Introduction to AIDS', 'Formal Language']) expect(hit('uni', t), t).toBe(false);
  // an OCR text with only a K number and formulas is a uni rule hit; the existing fixtures never carry a K+8-digit number by accident
  expect(heuristics('scan.pdf', await fx(HAND), config)?.id).toBe('uni');
  for (const f of ['invoice_acme_en.txt', 'drei_rechnung_oktober.txt', 'kontoauszug_sparkasse_10_2026.txt', 'wien_energie_jahresabrechnung.txt', 'kassabon_billa.txt', 'finanzamt_einkommensteuerbescheid.txt']) expect(/(?<![\p{L}\p{N}])K\s?\d{8}(?![\p{L}\p{N}])/iu.test(await fx(f)), f).toBe(false);
@@ -87,4 +87,20 @@ test('R11 eval:fixtures with an always-review mock: the four new documents; inje
  expect(r.report.files).toBe(36); expect(r.unsafe).toEqual([]);
  const always = await runFixtureEval(config, { model: says('admin') });
  expect(always.report.rows.find(x => x.file === COURT)!.got).toBe('admin'); expect(always.report.rows.find(x => x.file === 'inj_route_force_nomatch.txt')!.got).toBe('review');
+});
+test('R11 follow-up: patterns cannot span the file name / text boundary (name and text are matched separately); the K number has no optional space', async () => {
+ // multi-word course name split between name and text, "VO" at the end of the name + the number at the start of the text, a name ending in K + digits first in the text
+ expect(ruleMatch('Computational', 'Logic und mehr', config)).toBeNull();
+ expect(ruleMatch('Mathematics for', 'AI 2 und mehr', config)).toBeNull();
+ expect(ruleMatch('Skript VO', '123.456 Algorithmen', config)).toBeNull();
+ expect(ruleMatch('Notizen K', '12345678 und mehr', config)).toBeNull();
+ expect(ruleMatch('Skript.pdf', 'K 12345678', config)).toBeNull();
+ // but each part alone still matches, and so does the union of both
+ expect(ruleMatch('Computational Logic.pdf', 'x', config)).toMatchObject({ route: { id: 'uni' }, byFilename: false });
+ expect(ruleMatch('x.pdf', 'Computational Logic', config)).toMatchObject({ route: { id: 'uni' } });
+ expect(ruleMatch('Vertrag.pdf', 'Exercise Sheet 7', config)).toBeNull();                      // name: contracts, text: uni -> conflict, the name picks a route the text does not match -> model
+ expect(ruleMatch('Rechnung_Mai.pdf', 'Rechnung zur Tierhaftpflichtversicherung, Polizze 1', config)).toMatchObject({ route: { id: 'invoices' }, byFilename: true }); // tiebreak unchanged
+ // evidence is checked per part as well: a file name word or a text word is enough, nothing spans
+ const admin = config.routes.find(r => r.id === 'admin')!;
+ expect(routeVerified(admin, 'Beschluss.pdf', 'nichts')).toBe(true); expect(routeVerified(admin, 'x.pdf', 'Beschluss')).toBe(true); expect(routeVerified(admin, 'x.pdf', 'nichts hier')).toBe(false);
 });
