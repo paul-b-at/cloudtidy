@@ -122,7 +122,7 @@ test('unavailable model / empty text / unsupported type / unsafe name all end in
   const r = await runOnce(sb.config, { apply: true, model: failingModel });
   expect(Object.fromEntries(r.items.map(i => [i.file, i.reason]))).toEqual({ 'a.txt': 'model_failed', 'empty.txt': 'empty_text', 'x.zip': 'unsupported_type' });
   expect(r.skipped.map(s => s.name)).toContain('h~x.txt');
-  expect(await readdir(sb.review)).toEqual(['a.txt', 'empty.txt', 'x.zip']);
+  expect((await readdir(sb.review)).sort()).toEqual(['a.txt', 'empty.txt', 'x.zip']);
  } finally { await sb.cleanup(); }
 });
 test('transient helper failures are retried a bounded number of times; definite failures are not retried', async () => {
