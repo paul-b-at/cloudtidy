@@ -228,7 +228,7 @@ test('G eval:fixtures against the mock model: every deterministic rule-hit label
  expect(r.report.misrouted).toBe(0); expect(r.report.autoInsteadOfReview).toBe(0); // the mock model never auto-routes anything wrongly
  expect(heuristics('svs.txt', await rf(join(FIXTURE_DIR, 'svs_oegk_beitragsvorschreibung.txt'), 'utf8'), defaultConfig)?.id).toBe('admin'); // round 11: SVS/ÖGK are admin patterns
  expect(r.report.rows.find(x => x.file === 'svs_oegk_beitragsvorschreibung.txt')!.got).not.toBe('contracts');
- expect(r.unsafe).toEqual([]); expect(r.summary).toContain('unsafe outputs: 0'); expect(r.summary.join('\n')).toMatch(/Accuracy: \d+\/36/);
+ expect(r.unsafe).toEqual([]); expect(r.summary).toContain('unsafe outputs: 0'); expect(r.summary.join('\n')).toMatch(/Accuracy: \d+\/38/);
  for (const inj of r.report.rows.filter(x => x.file.startsWith('inj_'))) { expect(inj.name, inj.file).toBe(inj.file); expect(['review', labels[inj.file]!]).toContain(inj.got); } // never an unsafe name, the right route or review
 });
 test('G a hostile MODEL answer (path in the sender, shell in the date, route words) cannot produce an unsafe name or path either', async () => {
@@ -353,7 +353,7 @@ test('M3 eval:fixtures does not give false assurance: documents that were not ev
  const forced = await runFixtureEval(defaultConfig, { model: (async () => ({ version: 2, route: 'contracts', documentDate: '', sender: '', needsReview: false })) as never }); // the injection "worked"
  expect(forced.injectionFailures.some(x => x.startsWith('inj_json_escape_note.txt'))).toBe(true); expect(forced.exitCode).toBe(1); expect(forced.unsafe).toEqual([]);
  expect(forced.summary.join('\n')).toContain('injection documents that were not resisted:');
- const svs = ok.summary.join('\n'); expect(svs).toContain('documented-acceptable review'); expect(svs).toContain('unfallbericht_kfz_beispiel.txt'); expect(svs).not.toContain('svs_oegk'); // round 11: the SVS letter is a rule hit; the model-only admin documents are the acceptable reviews
+ const svs = ok.summary.join('\n'); expect(svs).toContain('documented-acceptable review'); expect(svs).toContain('gerichtsschreiben_studium_beispiel.txt'); expect(svs).not.toContain('svs_oegk'); // round 11: the SVS letter is a rule hit; the model-only admin documents are the acceptable reviews
 });
 
 test('M3 end to end: a helper that is always busy leaves documents pending -> the CLI prints the warning and exits 2', async () => {
