@@ -111,7 +111,7 @@
       "description": "University coursework from JKU Linz: lecture slides and scripts, exercise sheets and their solutions, assignments, exams (e.g. algorithms, computational logic, mathematics, machine learning); not contracts or administrative letters",
       "rename": false,
       "patterns": [
-        "VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU|K\\s?\\d{8}",
+        "VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU|K\\d{8}",
         "Übungsblatt|Übungsblätter|Übungszettel|Exercise\\s+sheets?|Exercise\\s+Sheet\\s*\\d+|Assignment\\s+\\d+|Lecture\\s+notes|Johannes\\s+Kepler|Moodle",
         "Mathematics\\s+for\\s+AI|Computational\\s+Logic|Algorithms\\s+and\\s+Data\\s+Structures|Programming\\s+in\\s+Python|Machine\\s+Learning\\s+(?:and|&)\\s+Pattern\\s+Classification|Statistics\\s+for\\s+AI|Introduction\\s+to\\s+(?:AI|Artificial\\s+Intelligence)|Formal\\s+Languages"
       ]
