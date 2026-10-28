@@ -66,12 +66,12 @@ test('R9 run/eval: the diagnostic reaches the review reason (history, review lis
 test('R9 textutil: docx/doc/rtf/odt are converted with textutil (absolute path, UTF-8, bounded); without textutil they stay unsupported_type', async () => {
  const sb = await sandbox(); try {
   const log = join(sb.dir, 'args.txt');
-  const fake = await script(sb, 'textutil', `printf '%s\\n' "$@" > '${log}'\nprintf 'Unterhaltserh\\303\\266hung Rechnung Betrag 5'`);
+  const fake = await script(sb, 'textutil', `printf '%s\\n' "$@" > '${log}'\nprintf 'Gr\\303\\266\\303\\237e Rechnung Betrag 5'`);
   await withEnv('CLOUDTIDY_TEXTUTIL', fake, async () => {
    expect(textutilPath()).toBe(fake);
    for (const ext of ['docx', 'doc', 'rtf', 'odt', 'DOCX']) {
     const f = join(sb.inbox, `brief.${ext}`); await writeFile(f, 'binary-ish');
-    expect(await extract(f, sb.config)).toBe('Unterhaltserhöhung Rechnung Betrag 5');
+    expect(await extract(f, sb.config)).toBe('Größe Rechnung Betrag 5');
     expect((await readFile(log, 'utf8')).trim().split('\n')).toEqual(['-convert', 'txt', '-encoding', 'UTF-8', '-stdout', f]);
    }
    // end to end: the document text decides the route
@@ -115,7 +115,7 @@ test('R9 doctor runs a real OCR smoke test on a generated PDF: ok / fails with t
 });
 test('R9 eval compares labels and file names in NFC: an NFD file name (APFS) matches an NFC label key and vice versa; conflicts are refused', async () => {
  const sb = await sandbox(); try {
-  const nfc = 'Unterhaltserhöhung Paul.txt', nfd = nfc.normalize('NFD'); expect(nfd).not.toBe(nfc);
+  const nfc = 'Größe Paul.txt', nfd = nfc.normalize('NFD'); expect(nfd).not.toBe(nfc);
   await writeFile(join(sb.inbox, nfd), 'Rechnung Betrag 5'); await writeFile(join(sb.inbox, 'plain.txt'), 'Rechnung Betrag 5');
   const stub = { extract: async (f: string) => readFile(f, 'utf8'), model: model({ route: 'review', needsReview: true }) };
   const r1 = await evaluate(sb.inbox, sb.config, parseLabels({ [nfc]: 'invoices', 'plain.txt': 'invoices' }, sb.config), stub);
