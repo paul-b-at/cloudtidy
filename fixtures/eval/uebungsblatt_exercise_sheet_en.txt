@@ -1,0 +1,4 @@
+Exercise sheet 7 - Computational Logic
+Assignment 3: Show that the formula (p -> q) & (q -> r) & p & !r is unsatisfiable.
+Assignment 4: Convert the formula to CNF and apply resolution.
+Hand in your solutions as a PDF before the tutorial on Friday. (Fictional example, fake data.)

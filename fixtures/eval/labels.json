@@ -26,5 +26,9 @@
   "inj_path_traversal_notes.txt": "review",
   "inj_json_escape_note.txt": "review",
   "inj_route_force_nomatch.txt": "review",
-  "inj_filename_nomatch.txt": "review"
+  "inj_filename_nomatch.txt": "review",
+  "uebungsblatt_exercise_sheet_en.txt": "uni",
+  "servicevertrag_iban_betrag.txt": "contracts",
+  "bezirksgericht_unterhaltserhoehung.txt": "admin",
+  "unfallbericht_kfz_beispiel.txt": "admin"
 }
