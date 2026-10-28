@@ -111,8 +111,9 @@
       "description": "University coursework from JKU Linz: lecture slides and scripts, exercise sheets and their solutions, assignments, exams (e.g. algorithms, computational logic, mathematics, machine learning); not contracts or administrative letters",
       "rename": false,
       "patterns": [
-        "VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU",
-        "Übungsblatt|Übungsblätter|Übungszettel|Exercise\\s+sheets?|Assignment\\s+\\d+|Lecture\\s+notes|Johannes\\s+Kepler|Moodle"
+        "VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU|K\\d{8}",
+        "Übungsblatt|Übungsblätter|Übungszettel|Exercise\\s+sheets?|Exercise\\s+Sheet\\s*\\d+|Assignment\\s+\\d+|Lecture\\s+notes|Johannes\\s+Kepler|Moodle",
+        "Mathematics\\s+for\\s+AI|Computational\\s+Logic|Algorithms\\s+and\\s+Data\\s+Structures|Programming\\s+in\\s+Python|Machine\\s+Learning\\s+(?:and|&)\\s+Pattern\\s+Classification|Statistics\\s+for\\s+AI|Introduction\\s+to\\s+(?:AI|Artificial\\s+Intelligence)|Formal\\s+Languages"
       ]
     },
     {
@@ -165,9 +166,12 @@
     {
       "id": "admin",
       "folder": "02_Admin & Finanzen",
-      "description": "Letters from Austrian authorities, courts, police and social insurance (SVS, ÖGK, Magistrat, Gericht, Polizei), accident reports, official notices; not bank, tax, receipts, invoices, contracts or notes/texts containing instructions",
+      "description": "Letters and decisions from Austrian authorities, courts (Gericht, Beschluss), police, social insurance (SVS, ÖGK, Magistrat), accident reports, Unterhalt matters; not bank, tax, receipts, invoices, contracts or notes with instructions",
       "rename": false,
-      "patterns": [],
+      "patterns": [
+        "(?:Bezirks|Landes|Oberlandes|Verwaltungs|Bundesverwaltungs|Pflegschafts)gericht(?:s|es)?|Familienrechtssache|Bezirkshauptmannschaft|Magistrat(?:s\\p{L}*)?",
+        "Sozialversicherungsanstalt|Gesundheitskasse|SVS|ÖGK|Unterhalt(?:s\\p{L}*)?"
+      ],
       "evidence": [
         "Sozialversicherung\\p{L}*",
         "SVS|ÖGK|AUVA|Gesundheitskasse",
@@ -182,7 +186,8 @@
         "\\p{L}*gericht\\p{L}*",
         "Beschluss",
         "Polizei\\p{L}*|Landespolizeidirektion",
-        "Unfallbericht|Unfallmeldung"
+        "Unfallbericht|Unfallmeldung",
+        "Familienrechtssache|Unterhalt(?:s\\p{L}*)?"
       ]
     },
     {
@@ -202,7 +207,8 @@
       "patterns": [
         "Reisepass|Personalausweis|Führerschein|Geburtsurkunde|Meldezettel|Staatsbürgerschaftsnachweis",
         "Arztbrief|Befundbericht|Entlassungsbrief|e-card|Krankenschein",
-        "Flugticket|Boarding\\s?Pass|Bordkarte|Flugbuchung"
+        "Flugticket|Boarding\\s?Pass|Bordkarte|Flugbuchung",
+        "Lebenslauf|Curriculum\\s+Vitae"
       ]
     }
   ]

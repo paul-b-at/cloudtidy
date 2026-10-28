@@ -88,9 +88,9 @@ test('F1c a breaker-skipped new file is pending, not an attempt (no clock, no ba
 test('F2 SVS/ÖGK letters never route to contracts by rule; real insurance contracts still do', () => {
  for (const t of [
   'Sozialversicherung der Selbständigen / Versicherungsnummer: 1234 010190 / Beitragsvorschreibung 2026',
-  'Österreichische Gesundheitskasse / Sozialversicherung / Versicherungsdatenauszug',
   'Ihre Versicherungsnummer lautet 1234', 'Versicherungsdaten 2026'
  ]) expect(heuristics('x.txt', t, config), t).toBeNull();
+ expect(heuristics('x.txt', 'Österreichische Gesundheitskasse / Sozialversicherung / Versicherungsdatenauszug', config)?.id).toBe('admin'); // round 11: admin by rule, still never contracts
  for (const t of ['Versicherung Polizze Nr. 77', 'Haftpflichtversicherung', 'Versicherungsvertrag 2026', 'Versicherungsbedingungen (AVB)', 'Krankenversicherung'])
   expect(heuristics('x.txt', t, config)?.id, t).toBe('contracts');
 });

@@ -6,8 +6,8 @@ import { baseJson, defaultConfig as config } from './helpers';
 const route = (id: string) => config.routes.find(r => r.id === id)!;
 test('default config validates and carries the Notion Tier-1 patterns (whole-word, Unicode aware)', () => {
  expect(config.routes.map(r => r.id)).toEqual(['uni', 'invoices', 'contracts', 'bank', 'tax', 'receipts', 'admin', 'dev', 'personal']);
- expect(route('uni').patterns[0]).toBe('VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU');
- expect(route('admin')).toMatchObject({ folder: '02_Admin & Finanzen', rename: false, patterns: [] }); // root, model-only
+ expect(route('uni').patterns[0]).toBe('VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU|K\\d{8}');
+ expect(route('admin')).toMatchObject({ folder: '02_Admin & Finanzen', rename: false }); // root; round 11: strong authority markers are Tier-1 patterns again
  for (const [id, folder] of [['bank', 'Bank'], ['tax', 'Steuern'], ['receipts', 'Belege']] as const) expect(route(id)).toMatchObject({ folder: `02_Admin & Finanzen/${folder}`, rename: false });
  expect(route('invoices').folder).toBe('02_Admin & Finanzen/Rechnungen'); expect(route('contracts').folder).toBe('02_Admin & Finanzen/Verträge');
  expect(config.daemon.apply).toBe(false); expect(config.naming.datePrefix).toBe(false); expect(config.allowNonICloudRoot).toBe(false);

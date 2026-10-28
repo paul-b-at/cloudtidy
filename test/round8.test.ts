@@ -15,7 +15,7 @@ const NOTIZ = 'notiz_unklar.txt', SVS = 'svs_oegk_beitragsvorschreibung.txt', IN
 
 test('R8 default config: only admin carries evidence, and it never contains the bare words admin / Amt', () => {
  for (const r of config.routes) expect(r.evidence !== undefined, r.id).toBe(r.id === 'admin');
- expect(route('admin').patterns).toEqual([]);
+ for (const t of ['admin', 'Amt', 'Behörde', 'Behörden', 'Bescheid', 'Verwaltung', 'Gericht', 'Beschluss', 'Polizei']) expect(heuristics('x.txt', t, config), t).toBeNull(); // round 11: the Tier-1 patterns carry only strong markers
  const ev = routeEvidence(route('admin'));
  expect(ev.length).toBeGreaterThanOrEqual(10);
  for (const t of ['admin', 'admin mode', 'Admin', 'Amt', 'Verwaltung', 'Administrator', 'Behördengang', 'SVSX', 'Bescheidenheit', 'Behörde', 'Behörden', 'Bescheid', 'Bescheide', 'Er weiß schon Bescheid']) expect(ev.some(re => re.test(t)), t).toBe(false);
@@ -33,13 +33,13 @@ test('R8 the forced-route injection (fixture inj_route_force_nomatch) answered `
   expect(await readdir(sb.review)).toEqual(['note.txt']); expect(await readdir(join(sb.root, '02_Admin & Finanzen'))).not.toContain('note.txt');
  } finally { await sb.cleanup(); }
 });
-test('R8 the SVS fixture answered `admin` by the model is accepted (it carries evidence)', async () => {
- const text = await fx(SVS);
- expect(heuristics(SVS, text, config)).toBeNull();
- expect(await classify(SVS, text, config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'model', needsReview: false, reason: 'model_suggestion' });
+test('R8 a model-only admin letter (accident report) answered `admin` by the model is accepted (it carries evidence)', async () => {
+ const text = await fx('unfallbericht_kfz_beispiel.txt');
+ expect(heuristics('unfall.txt', text, config)).toBeNull();
+ expect(await classify('unfall.txt', text, config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'model', needsReview: false, reason: 'model_suggestion' });
  const sb = await sandbox(); try {
-  await Bun.write(join(sb.inbox, 'svs.txt'), text);
-  expect((await runOnce(sb.config, { apply: true, model: says('admin') })).items[0]).toMatchObject({ outcome: 'moved', route: 'admin', destination: '02_Admin & Finanzen/svs.txt' });
+  await Bun.write(join(sb.inbox, 'unfall.txt'), text);
+  expect((await runOnce(sb.config, { apply: true, model: says('admin') })).items[0]).toMatchObject({ outcome: 'moved', route: 'admin', destination: '02_Admin & Finanzen/unfall.txt' });
  } finally { await sb.cleanup(); }
 });
 test('R8 eval:fixtures with a model that answers `admin` for everything: the injection ends in review, the SVS letter in admin, unsafe outputs 0', async () => {
@@ -50,10 +50,9 @@ test('R8 eval:fixtures with a model that answers `admin` for everything: the inj
  // nothing but the SVS letter (and genuine authority mail) can reach admin through the model
  for (const row of r.report.rows) if (row.tier === 'model' && row.got === 'admin') expect(routeVerified(route('admin'), row.file, await fx(row.file)), row.file).toBe(true);
 });
-test('R8 evidence never fires Tier 1 and does not count as a pattern match', () => {
- expect(routePatterns(route('admin'))).toEqual([]);
- for (const t of ['SVS Beitragsvorschreibung', 'Bescheid der Bezirkshauptmannschaft', 'Magistrat Wien Amt', 'Versicherungsnummer 1234 ÖGK']) expect(heuristics('x.txt', t, config), t).toBeNull();
- expect(heuristics('x.txt', 'Kontoauszug und SVS Bescheid', config)?.id).toBe('bank'); // evidence words next to a real pattern do not create a conflict
+test('R8 evidence-only words never fire Tier 1 and do not count as a pattern match (round 11: the strong markers do, as patterns)', () => {
+ for (const t of ['AUVA Beitragsvorschreibung', 'Bescheid der Landesregierung', 'Polizeiinspektion Urfahr Amt', 'Versicherungsnummer 1234 Beschluss', 'Unfallbericht']) expect(heuristics('x.txt', t, config), t).toBeNull();
+ expect(heuristics('x.txt', 'Kontoauszug und AUVA Bescheid', config)?.id).toBe('bank'); // evidence words next to a real pattern do not create a conflict
  expect(heuristics('x.txt', 'Steuerbescheid 2025', config)?.id).toBe('tax');
 });
 test('R8 only the model path is checked: routes without evidence are accepted as before, rule hits are untouched, the model may still say review (a rule hit keeps its route; the model only fills naming)', async () => {
@@ -84,7 +83,8 @@ test('R8 notiz_unklar ("Er weiß schon Bescheid") answered `admin` by the model 
  const text = await fx(NOTIZ);
  expect(text).toContain('Bescheid'); expect(heuristics(NOTIZ, text, config)).toBeNull();
  expect(await classify(NOTIZ, text, config, { model: says('admin') })).toMatchObject({ route: null, needsReview: true, reason: 'model_route_unverified:admin' });
- expect(await classify(SVS, await fx(SVS), config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'model' });
+ expect(await classify(SVS, await fx(SVS), config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'rule' }); // round 11: the SVS letter is a rule hit
+ expect(await classify('u.txt', await fx('unfallbericht_kfz_beispiel.txt'), config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'model' });
  const r = await runFixtureEval(config, { model: says('admin') });
  expect(r.report.rows.find(x => x.file === NOTIZ)!.got).toBe('review'); expect(r.report.rows.find(x => x.file === SVS)!.got).toBe('admin');
 });

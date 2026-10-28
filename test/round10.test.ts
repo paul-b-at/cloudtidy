@@ -33,10 +33,10 @@ test('R10 fixtures: the exercise sheet is uni by rule without any JKU / UE numbe
  expect(hit('invoices', sv)).toBe(false);
  expect(heuristics(SERVICE, sv, config)).toMatchObject({ id: 'contracts' });
 });
-test('R10 court letter: no invoice rule, model `admin` accepted via evidence; without evidence words the same answer goes to review', async () => {
+test('R10 court letter: no invoice rule (round 11: admin by rule, Bezirksgericht/Unterhalt); a model `admin` answer needs evidence, the same answer without evidence words goes to review', async () => {
  const text = await fx(COURT); expect(text).toMatch(/Betrag/);
- expect(heuristics(COURT, text, config)).toBeNull(); expect(routeVerified(route('admin'), COURT, text)).toBe(true);
- expect(await classify(COURT, text, config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'model', needsReview: false });
+ expect(heuristics(COURT, text, config)).toMatchObject({ id: 'admin' }); expect(routeVerified(route('admin'), COURT, text)).toBe(true);
+ expect(await classify(COURT, text, config, { model: says('invoices') })).toMatchObject({ route: 'admin', tier: 'rule', reason: 'rule_match' }); // a rule hit is final
  const bare = 'Ein Brief mit dem Betrag 120 EUR, bitte lesen.';
  expect(routeVerified(route('admin'), 'x.txt', bare)).toBe(false);
  expect(await classify('x.txt', bare, config, { model: says('admin') })).toMatchObject({ route: null, needsReview: true, reason: 'model_route_unverified:admin' });
@@ -59,7 +59,7 @@ test('R10 eval with an always-admin mock model: court + accident report are admi
  const got = (f: string) => r.report.rows.find(x => x.file === f)!.got;
  expect(got(COURT)).toBe('admin'); expect(got(ACCIDENT)).toBe('admin'); expect(got(EXERCISE)).toBe('uni'); expect(got(SERVICE)).toBe('contracts');
  expect(got('inj_route_force_nomatch.txt')).toBe('review'); expect(got('notiz_unklar.txt')).toBe('review');
- expect(r.unsafe).toEqual([]); expect(r.report.files).toBe(32);
+ expect(r.unsafe).toEqual([]); expect(r.report.files).toBe(36);
 });
 test('R10 README procedure: a file given up as deferred_too_long:classifier_helper_missing is not retried by itself; moved back to _Inbox with a working model it is sorted', async () => {
  const { sandbox } = await import('./helpers'); const { runOnce } = await import('../src/run'); const { rename, writeFile, readdir } = await import('node:fs/promises');

@@ -126,7 +126,8 @@ test('rules: exactly one matching route is definite; conflicts and no match defe
 });
 test('personal Tier-1 rules: single match is definite, conflicts and unknown documents defer to the model', () => {
  for (const t of ['Reisepass Nr. P1234567', 'Personalausweis', 'Arztbrief Dr. Muster', 'Meine e-card', 'Flugticket VIE-LHR', 'Boarding Pass OS 871', 'Führerschein Klasse B']) expect(heuristics('scan.pdf', t, config)?.id).toBe('personal');
- expect(heuristics('Arztbrief.pdf', 'Versicherung Polizze', config)).toBeNull(); // conflict with contracts -> model
+ expect(heuristics('scan.pdf', 'Arztbrief Versicherung Polizze', config)).toBeNull(); // conflict with contracts -> model
+ expect(heuristics('Arztbrief.pdf', 'Arztbrief Versicherung Polizze', config)?.id).toBe('personal'); // round 11: the file name breaks the tie
  expect(heuristics('x.txt', 'Flugticket Rechnung IBAN', config)).toBeNull();
  expect(heuristics('x.txt', 'Befunde und Sozialversicherung', config)).toBeNull(); // Sozialversicherung is excluded from the contracts rule (statutory, not a contract); Befunde is not a personal word either
  expect(heuristics('x.txt', 'Steuerbescheid 2025', config)?.id).toBe('tax');

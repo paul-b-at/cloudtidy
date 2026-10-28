@@ -148,7 +148,8 @@ test('labelledDate is linear: 256 KiB of date-heavy text finishes quickly, and s
  expect(labelledDate(inputs[1]!)).toBe('2026-04-03'); // the only labelled date wins over 23 000 unlabelled ones
 });
 test('contracts rule: the Sozialversicherung compound is excluded, other *versicherung compounds stay', () => {
- for (const t of ['Sozialversicherung', 'Sozialversicherungsnummer 1234', 'Sozialversicherungsanstalt Wien', 'Bescheid der Sozialversicherung']) expect(heuristics('x.txt', t, config), t).toBeNull();
+ for (const t of ['Sozialversicherung', 'Sozialversicherungsnummer 1234', 'Bescheid der Sozialversicherung']) expect(heuristics('x.txt', t, config), t).toBeNull();
+ expect(heuristics('x.txt', 'Sozialversicherungsanstalt Wien', config)?.id).toBe('admin'); // round 11: a strong authority word, never contracts
  for (const t of ['Krankenversicherung', 'Haftpflichtversicherung Polizze', 'Versicherung', 'Rentenversicherungsträger', 'Sozialversicherung und Mietvertrag']) expect(heuristics('x.txt', t, config)?.id, t).toBe('contracts');
 });
 

@@ -223,8 +223,8 @@ test('model ran but its date/sender are not in the text: route stays, original n
  const named = targetName({ filename: 'scan.txt', text: 'Rechnung zahlbar sofort', route: route('invoices'), documentDate: d.documentDate, sender: d.sender }, config);
  expect(named).toMatchObject({ name: 'scan.txt', renamed: false });
 });
-test('admin subfolders: bank / tax / receipts keep names; admin root is model-only; date prefix only when enabled; conflicts go to the model', async () => {
- expect(route('admin')).toMatchObject({ folder: '02_Admin & Finanzen', rename: false, patterns: [] });
+test('admin subfolders: bank / tax / receipts keep names; admin root has strong authority patterns (round 11); date prefix only when enabled; conflicts go to the model', async () => {
+ expect(route('admin')).toMatchObject({ folder: '02_Admin & Finanzen', rename: false });
  for (const [id, t] of [['bank', 'Kontoauszug Oktober'], ['tax', 'Ihr Steuerbescheid 2025'], ['tax', 'Finanzamt Wien'], ['receipts', 'Kassenbon Billa'], ['receipts', 'Quittung 4711'], ['receipts', 'Receipt #3']] as const) {
   expect(route(id)).toMatchObject({ rename: false }); expect(heuristics('x.pdf', t, config)?.id, t).toBe(id);
  }
