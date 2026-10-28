@@ -1,8 +1,9 @@
-import { access, mkdir, rm, rmdir, writeFile, lstat } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, rmdir, writeFile, lstat } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { release } from 'node:os';
+import { release, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { checkModel } from './classifier';
+import { HelperError, helperState, run } from './process';
 import { oneFileMaxSeconds, worstCaseLockSeconds, type Config } from './config';
 import { exclusiveRename, exclusiveRenameSupported, type RenameOptions } from './fsx';
 import { agentState, installedPlist, isVersionedBunPath, type Exec, realExec } from './install';
@@ -33,6 +34,31 @@ export async function probeExclusiveRename(layout: Layout, opts: RenameOptions =
  } catch (e) { return { ok: false, detail: `probe failed: ${(e as NodeJS.ErrnoException).code ?? 'error'} (cannot write to ${INBOX}?)` }; }
  finally { if (made) { for (const f of [a, b, c]) await rm(f, { force: true }).catch(() => {}); await rmdir(dir).catch(() => {}); } }
 }
+/** The text of the generated smoke-test PDF; the helper must return it (>= 30 characters, so the PDF text layer is used). */
+export const OCR_SMOKE_TEXT = 'cloudtidy ocr smoke test CT4711 ok';
+/** A minimal one-page PDF whose text layer is OCR_SMOKE_TEXT (valid xref, Helvetica). */
+export function smokePdf(): Buffer {
+ const stream = `BT /F1 20 Tf 40 100 Td (${OCR_SMOKE_TEXT}) Tj ET`;
+ const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>', `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+ let out = '%PDF-1.4\n'; const offsets: number[] = [];
+ objs.forEach((o, i) => { offsets.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+ const xref = out.length;
+ out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map(o => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+ return Buffer.from(out, 'latin1');
+}
+/** Really run the OCR helper (own spawn, own temp folder, removed again) on a generated PDF. Never touches iCloud or the user's files. */
+export async function ocrSmoke(config: Config): Promise<{ ok: boolean; detail: string }> {
+ let dir: string | null = null;
+ try {
+  dir = await mkdtemp(join(tmpdir(), 'cloudtidy-ocr-'));
+  const pdf = join(dir, 'smoke.pdf'); await writeFile(pdf, smokePdf());
+  const out = await run(config.ocr, [pdf], '', Math.min(config.timeoutMs, 30000), 65536);
+  return out.includes('CT4711') ? { ok: true, detail: 'generated PDF read back (PDFKit text layer; the Vision OCR path for scans is only exercised by scanned files)' } : { ok: false, detail: `ran, but did not return the known text (${out.trim().length} characters)` };
+ } catch (e) {
+  const d = e instanceof HelperError ? (e.diag ?? e.message) : 'error';
+  return { ok: false, detail: `helper failed: ${d.replace(/[^A-Za-z0-9_.:|-]/g, '').slice(0, 80)}${e instanceof HelperError && e.message === 'helper_unavailable' ? ' (cannot be started: check permissions, quarantine/signature, run bun run build:helpers)' : ''}` };
+ } finally { if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {}); }
+}
 /** Read-only diagnostics except the probe above (own dot-folder in _Inbox, removed again). Never creates taxonomy folders. */
 export async function doctor(config: Config, exec: Exec = realExec): Promise<Check[]> {
  const checks: Check[] = [], add = (name: string, pass: boolean, required: boolean, detail: string, warn = false) => checks.push({ name, ok: pass, required, detail, ...(warn ? { warn: true } : {}) });
@@ -41,10 +67,13 @@ export async function doctor(config: Config, exec: Exec = realExec): Promise<Che
  // Apple Foundation Models need Apple silicon, and a bun running under Rosetta (x64) is a different binary for Full Disk Access / the helper's model access.
  const translated = darwin ? (await exec(['/usr/sbin/sysctl', '-n', 'sysctl.proc_translated']).catch(() => ({ code: 1, output: '' }))).output.trim() === '1' : false;
  add('native Apple silicon (arm64, not Rosetta)', process.arch === 'arm64' && !translated, true, `${process.arch}${translated ? ', running under Rosetta: install the arm64 bun (https://bun.sh) and re-run install' : ''}`);
- add('classifier helper built', await ok(config.classifier, constants.X_OK), true, config.classifier);
+ const clsState = await helperState(config.classifier);
+ add('classifier helper built', clsState === 'ok', true, clsState === 'ok' ? config.classifier : `${config.classifier}: ${clsState} (a regular, executable file is required; run bun run build:helpers)`);
  const model = await checkModel(config);
  add('Apple Foundation Model available', model.available, true, model.reason);
- add('OCR helper built', await ok(config.ocr, constants.X_OK), true, config.ocr);
+ const ocrState = await helperState(config.ocr), ocrBuilt = ocrState === 'ok';
+ add('OCR helper built', ocrBuilt, true, ocrBuilt ? config.ocr : `${config.ocr}: ${ocrState} (a regular, executable file is required; run bun run build:helpers)`);
+ if (ocrBuilt) { const smoke = await ocrSmoke(config); add('OCR helper works (smoke test)', smoke.ok, true, smoke.detail); }
  const pdf = process.env.CLOUDTIDY_PDFTOTEXT || Bun.which('pdftotext');
  add('pdftotext (optional, brew install poppler)', !!pdf, false, pdf ? `${pdf} (install pins this absolute path in the LaunchAgent)` : 'absent: PDFs fall back to Vision OCR');
  let inboxOk = false, detail = config.root, layout: Layout | null = null;

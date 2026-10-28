@@ -1,6 +1,6 @@
 import { routeEvidence, routePatterns, type Config, type Route } from './config';
 import { DATE_PREFIX_FOLDERS, extractNaming } from './naming';
-import { HelperError, run } from './process';
+import { HelperError, helperState, run } from './process';
 
 export const PROTOCOL_VERSION = 2;
 export type Tier = 'rule' | 'model' | 'none';
@@ -67,6 +67,8 @@ export const safeSlice = (text: string, limit: number): string => {
  return text.slice(0, code >= 0xd800 && code <= 0xdbff ? limit - 1 : limit);
 };
 export const callHelper: ModelCall = async (filename, text, config, lockedRoute = null) => {
+ const st = await helperState(config.classifier);
+ if (st !== 'ok') throw new HelperError('helper_unavailable', null, null, false, `classifier_helper_missing:${st}`); // not built / not executable: reported as such, not as "model unavailable"
  const input = { version: PROTOCOL_VERSION, filename, text: safeSlice(text, MODEL_TEXT_LIMIT), routes: config.routes.map(({ id, description }) => ({ id, description })), ...(lockedRoute ? { lockedRoute } : {}) };
  return JSON.parse(await run(config.classifier, [], JSON.stringify(input), config.timeoutMs));
 };
@@ -87,7 +89,7 @@ export function modelFailure(e: unknown): ModelOutcome {
  if (e instanceof SyntaxError) return { kind: 'failed', reason: 'invalid_response' };
  if (!(e instanceof HelperError)) return { kind: 'failed', reason: 'model_failed' };
  if (e.message === 'helper_timeout') return { kind: 'transient', reason: 'model_timeout', retry: true };
- if (e.message === 'helper_unavailable') return { kind: 'transient', reason: 'model_unavailable', retry: false };
+ if (e.message === 'helper_unavailable') return { kind: 'transient', reason: e.diag?.startsWith('classifier_helper_missing') ? (e.diag.endsWith(':missing') ? 'classifier_helper_missing' : e.diag) : 'model_unavailable', retry: false };
  if (e.exitCode === 2) return { kind: 'transient', reason: 'model_unavailable', retry: false };
  if (e.exitCode === 4) return { kind: 'transient', reason: 'model_busy', retry: true };
  if (e.message === 'helper_failed' && e.exitCode === null) return { kind: 'transient', reason: 'model_crashed', retry: true };

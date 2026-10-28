@@ -12,13 +12,16 @@ Updated after the safety and Notion-conformance review fixes (round 6). Source: 
 
 ## Increment 1 — read-only classifier (done, pending Mac verification)
 
+Round 9: PDF text layer via PDFKit before Vision OCR, short helper diagnostics in review reasons, a missing helper keeps files pending (`ocr_helper_missing` / `classifier_helper_missing`), doctor OCR smoke test, `textutil` for .docx/.doc/.rtf/.odt, NFC label matching in `eval`.
+Round 10 (real-document tuning): `invoices` loses `IBAN`/`Betrag`/`Beträge` (court letters and contracts contain them) and gains `Zahlungsaufforderung`; `Mahnung` stays out (model decides). `uni` gains Übungsblatt/Exercise sheet/Assignment N/Lecture notes/Johannes Kepler/Moodle. `admin` evidence gains courts (`…gericht…`), `Beschluss`, `Polizei…`, `Unfallbericht`/`Unfallmeldung`, `Landesregierung` (merged into alternations: 14 of 16 entries) and the admin description names courts, police and accident reports. Four new fixtures (32 total).
+
 Config validation, `classify` / `scan --dry-run`, bounded text/PDF/Vision-OCR extraction, rules + schema-constrained Swift classifier, strict validation, review fallback, `doctor`, mocked tests, CI template.
 
 ## Increment 2 — real-device verification (PENDING: needs the M4 Pro)
 
 - Build helpers with Xcode 26+, run `doctor`, `bin/classify --check`.
 - `eval` on ≥ 20 representative German/English documents with labels: accuracy, review rate, cold/warm latency (tooling implemented; numbers are not). Naming is only shown as a proposed name per file, not scored.
-- `bun run eval:fixtures` first, right after the helper build (28 synthetic DE/EN documents incl. 7 prompt-injection ones; exit 0 required: 1 = unsafe output / successful injection, 2 = documents not evaluated), then the 20 real documents.
+- `bun run eval:fixtures` first, right after the helper build (32 synthetic DE/EN documents incl. 7 prompt-injection ones; exit 0 required: 1 = unsafe output / successful injection, 2 = documents not evaluated), then the 20 real documents.
 - Prompt-injection text, OCR-only scans, refusals/guardrails, context overflow, offline use.
 - Model reachable from a logged-in-user LaunchAgent (`status` shows it); TCC/Full Disk Access for `bun`.
 
