@@ -73,7 +73,7 @@ export class PendingStore {
   for (const k of Object.keys(this.entries)) if (!keep.has(k)) { delete this.entries[k]; this.dirty = true; }
  }
  /** A deferred file is retried when its backoff elapsed, or at once when the model it was waiting for is available again. */
- due(e: PendingEntry, modelAvailable: boolean): boolean { return this.now() >= e.next || (e.reason === 'model_unavailable' && modelAvailable); }
+ due(e: PendingEntry, modelAvailable: boolean): boolean { return this.now() >= e.next || ((e.reason === 'model_unavailable' || e.reason.startsWith('classifier_helper_missing')) && modelAvailable); }
  /**
   * Old enough to be given up on: `maxDeferHours` since the first APPLY-mode attempt, and at least MIN_APPLY_ATTEMPTS apply-mode attempts.
   * This alone is not a verdict: plan() makes one more attempt and only a transient failure of that attempt sends the file to review.

@@ -4,7 +4,7 @@ import { callHelper, classify, wantsNaming, type ClassifyDeps, type Decision, ty
 import { ExtractError, extract as realExtract } from './extract';
 import { fingerprint, sha256File, type Fingerprint, type RenameOptions } from './fsx';
 import { makeJournal, type Outcome } from './history';
-import { HelperError } from './process';
+import { HelperError, cleanDiag, helperState } from './process';
 import { moveNoClobber } from './mover';
 import { targetName } from './naming';
 import { assertDestDir, FOLDER_MISSING, UnsafePathError, type Layout, type SourceKind } from './paths';
@@ -38,7 +38,10 @@ export async function analyze(file: string, name: string, sha256: string | null,
   catch (e) {
    // An OCR/pdf helper timeout is transient (retry later); a definite extraction failure is a review verdict.
    const timeout = e instanceof HelperError && e.message === 'helper_timeout';
-   d = { route: null, tier: 'none', needsReview: !timeout, reason: e instanceof ExtractError ? e.reason : 'extraction_failed', transient: timeout, documentDate: null, sender: null };
+   // A missing / non-executable OCR helper is a configuration problem, not a verdict on the document: the file stays pending (retried at once when the helper appears, given up on only after maxDeferHours of apply runs).
+   if (e instanceof HelperError && e.message === 'helper_missing') { const st = (e.diag ?? 'ocr:missing').split(':')[1]; d = { route: null, tier: 'none', needsReview: false, reason: st === 'missing' ? 'ocr_helper_missing' : `ocr_helper_missing:${cleanDiag(st ?? 'missing', 20)}`, transient: true, documentDate: null, sender: null }; }
+   else
+   d = { route: null, tier: 'none', needsReview: !timeout, reason: e instanceof ExtractError ? e.reason : !timeout && typeof (e as NodeJS.ErrnoException)?.code === 'string' ? `extraction_failed:${cleanDiag((e as NodeJS.ErrnoException).code!, 40)}` : 'extraction_failed', transient: timeout, documentDate: null, sender: null };
   }
  }
  const route = d.route ? config.routes.find(r => r.id === d.route) ?? null : null;
@@ -89,8 +92,8 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
  const inner: ModelCall = deps.model ?? callHelper; let tripped: HelperError | null = null;
  let reached = false, skipped = false; // reached: THIS file made a real helper call in this run; skipped: the open breaker answered instead of the model
  const direct: ModelCall = async (...args) => { reached = true; return inner(...args); }; // expired entries: always a real call, never the breaker
- const breaker: ModelCall = async (...args) => { if (tripped) { skipped = true; throw new HelperError(tripped.message, tripped.exitCode, null, true); } reached = true; return inner(...args); };
- const MODEL_DOWN: Record<string, [string, number | null]> = { model_timeout: ['helper_timeout', null], model_unavailable: ['helper_unavailable', null], model_busy: ['helper_failed', 4], model_crashed: ['helper_failed', null] };
+ const breaker: ModelCall = async (...args) => { if (tripped) { skipped = true; throw new HelperError(tripped.message, tripped.exitCode, null, true, tripped.diag); } reached = true; return inner(...args); };
+ const MODEL_DOWN: Record<string, [string, number | null]> = { classifier_helper_missing: ['helper_unavailable', null], model_timeout: ['helper_timeout', null], model_unavailable: ['helper_unavailable', null], model_busy: ['helper_failed', 4], model_crashed: ['helper_failed', null] };
  for (const f of files) {
   // Time budget: checked before a file is STARTED. Once spent, the rest is left completely untouched (no pending change, no attempt, no review): it is simply next in line.
   if (deps.budget && deps.budget.elapsed() >= deps.budget.ms) { left++; continue; }
@@ -101,7 +104,9 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
   const add = (analysis: Analysis) => planned.push({ ...f, sha256: sha, analysis });
   if (f.snapshot.size === 0) { pend?.clear(f.name); add(reviewAnalysis(f.name, 'empty_file')); continue; } // grace period already elapsed (run.ts)
   const e = pend?.get(f.name), mine = e && e.kind === 'model' && e.sha256 === sha ? e : undefined;
-  if (pend && mine && !(deps.apply && pend.expired(mine, config) && mine.reason !== 'model_busy') && !pend.due(mine, !!deps.modelAvailable)) { // waiting for the backoff: no model call. An expired entry bypasses it (one final call), except after a `model_busy` final call: that keeps its backoff, otherwise it would be re-asked on every run and starve the files behind it
+  // An OCR helper that was missing and is there now: retry at once instead of waiting out the backoff.
+  const ocrBack = !!mine && mine.reason.startsWith('ocr_helper_missing') && (await helperState(config.ocr)) === 'ok';
+  if (pend && mine && !ocrBack && !(deps.apply && pend.expired(mine, config) && mine.reason !== 'model_busy') && !pend.due(mine, !!deps.modelAvailable)) { // waiting for the backoff: no model call. An expired entry bypasses it (one final call), except after a `model_busy` final call: that keeps its backoff, otherwise it would be re-asked on every run and starve the files behind it
    add({ ...reviewAnalysis(f.name, mine.reason), needsReview: false, transient: true, detail: deferDetail(config, mine) });
    continue;
   }
@@ -110,7 +115,7 @@ export async function plan(files: { name: string; path: string; snapshot: Finger
   const wasExpired = !!(deps.apply && mine && pend?.expired(mine, config));
   reached = false; skipped = false;
   let a = await analyze(f.path, f.name, sha, wasExpired ? { ...config, classifierRetries: 0 } : config, { ...deps, model: wasExpired ? direct : breaker });
-  if (a.transient && !tripped && reached && MODEL_DOWN[a.reason]) tripped = new HelperError(...MODEL_DOWN[a.reason]!); // this file really asked and already used its retries: stop asking for the rest of the run
+  if (a.transient && !tripped && reached && MODEL_DOWN[a.reason]) tripped = new HelperError(...MODEL_DOWN[a.reason]!, null, false, a.reason.startsWith('classifier_helper_missing') ? 'classifier_helper_missing:missing' : null); // this file really asked and already used its retries: stop asking for the rest of the run
   if (a.transient && pend) {
    if (!skipped) { // an attempt = a real helper call OR any other transient failure that is the file's own (an OCR/pdftotext timeout): it backs off and may expire. Only the breaker's answer is not an attempt
     const ent = pend.touch(f.name, 'model', a.reason, { sha256: sha, attempt: true, apply: !!deps.apply });

@@ -1,0 +1,4 @@
+Unfallbericht (fiktives Beispiel, keine echten Daten)
+Unfalldatum: 03.09.2026, Ort: Beispielgasse 12, 4020 Linz. Beteiligt: zwei Pkw, ein Sachschaden, keine Verletzten.
+Aufgenommen von der Polizeiinspektion Beispielstadt, Aktenzahl 4711/26.
+Skizze und Fotos liegen bei.

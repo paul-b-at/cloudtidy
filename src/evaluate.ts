@@ -4,6 +4,7 @@ import { callHelper, type ModelCall, type Tier } from './classifier';
 import { safeName, type Config } from './config';
 import { analyze, type Analysis } from './engine';
 import { extract as realExtract } from './extract';
+import { helperState } from './process';
 import { INBOX, REVIEW } from './config';
 
 export interface InspectResult { file: string; route: string | null; destination: string | null; tier: Tier; needsReview: boolean; reason: string; renamed: boolean; /** Why a file that should be renamed kept its name (naming_*). */ namingReason?: string }
@@ -17,8 +18,15 @@ export type Labels = Record<string, string>;
 export function parseLabels(raw: unknown, config: Config): Labels {
  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('labels must be a JSON object of filename -> route id | "review"');
  const ids = new Set([...config.routes.map(r => r.id), 'review']);
- for (const [k, v] of Object.entries(raw)) if (typeof v !== 'string' || !ids.has(v)) throw Error(`unknown route "${String(v)}" for "${k}"`);
- return raw as Labels;
+ const labels: Labels = {};
+ for (const [k, v] of Object.entries(raw)) {
+  if (typeof v !== 'string' || !ids.has(v)) throw Error(`unknown route "${String(v)}" for "${k}"`);
+  // APFS lists file names decomposed (NFD) while a labels file is usually typed/saved composed (NFC): compare in NFC.
+  const key = k.normalize('NFC');
+  if (Object.hasOwn(labels, key) && labels[key] !== v) throw Error(`conflicting labels for "${key}" (the same name in two Unicode spellings)`);
+  Object.defineProperty(labels, key, { value: v, enumerable: true, writable: true, configurable: true });
+ }
+ return labels;
 }
 export interface EvalRow { file: string; expected: string | null; got: string; tier: Tier; reason: string; verdict: 'correct' | 'misrouted' | 'review_instead' | 'auto_instead_of_review' | 'unlabeled'; name: string; renamed: boolean; extractMs: number; classifyMs: number; modelCalls: number; routeMs: number; namingMs: number }
 export interface Stats { n: number; minMs: number | null; medianMs: number | null; p95Ms: number | null; maxMs: number | null }
@@ -27,6 +35,8 @@ export interface EvalReport {
  capped: { total: number; evaluated: number } | null; distribution: Record<string, number>; reviewRate: number; labeled: number;
  /** Labels whose filename is not in the folder (typos silently shrink the accuracy denominator otherwise). */
  unmatchedLabels: string[];
+ /** Helpers that are missing / not executable (only checked for the real ones, not for injected test doubles): one prominent warning each. */
+ helperWarnings: string[];
  accuracy: number | null; correct: number; misrouted: number; reviewInstead: number; autoInsteadOfReview: number;
  /** Rule-tier routing = pure heuristics (no model, no extraction). Budget: p95 <= 10 ms; `ruleTierSlow` flags a regression. Naming (deterministic extraction, plus a model call when fields are missing) is reported on its own. */
  latency: { extraction: Stats; ruleTier: Stats; ruleTierSlow: boolean; naming: Stats; modelTierWarm: Stats; modelColdMs: number | null; modelCallColdMs: number | null; modelCallWarm: Stats };
@@ -47,12 +57,17 @@ function statsPrecise(xs: number[]): Stats {
 }
 export interface EvalDeps { model?: ModelCall; extract?: (f: string, c: Config) => Promise<string>; now?: () => number }
 /** Read-only batch report for Paul's real-document check. Never writes anywhere, never uses the cache. */
+/** One-line explanation for a helper that cannot be started; the fix is always the same. */
+export const helperWarning = (what: 'OCR' | 'classifier', path: string, state: string) => `${what} helper ${state === 'missing' ? 'MISSING' : state === 'not_a_file' ? 'is not a file' : 'is NOT EXECUTABLE'} (${path}): ${what === 'OCR' ? 'PDFs and images cannot be read and stay pending' : 'files that need the model stay pending'}. Run: bun run build:helpers`;
 export async function evaluate(dir: string, config: Config, labels: Labels | null, deps: EvalDeps = {}, skipFiles: string[] = [], opts: EvalOptions = {}): Promise<EvalReport> {
  const now = deps.now ?? (() => performance.now()), root = resolve(dir);
  const cap = opts.maxFiles ?? DEFAULT_MAX_FILES;
  // Dotfiles (.DS_Store, ...), the labels file (--expected, or the conventional labels.json) and symlinks are not documents.
  const all = (await readdir(root, { withFileTypes: true })).filter(e => e.isFile() && !e.name.startsWith('.') && e.name !== 'labels.json' && !skipFiles.includes(join(root, e.name))).map(e => e.name).sort();
  const names = all.slice(0, cap), capped = all.length > cap ? { total: all.length, evaluated: cap } : null;
+ const helperWarnings: string[] = [];
+ if (!deps.extract) { const st = await helperState(config.ocr); if (st !== 'ok') helperWarnings.push(helperWarning('OCR', config.ocr, st)); }
+ if (!deps.model) { const st = await helperState(config.classifier); if (st !== 'ok') helperWarnings.push(helperWarning('classifier', config.classifier, st)); }
  const rows: EvalRow[] = [], modelCallMs: number[] = [], extractMs: number[] = [];
  let cold: number | null = null, coldCall: number | null = null;
  for (const name of names) {
@@ -65,7 +80,7 @@ export async function evaluate(dir: string, config: Config, labels: Labels | nul
   const t0 = now();
   const a = await analyze(file, name, null, config, { extract, model, sleep: async () => {} });
   const total = now() - t0, classifyMs = Math.max(0, total - ex);
-  const got = a.transient ? 'pending' : a.needsReview ? 'review' : a.route!.id, expected = labels?.[name] ?? null;
+  const got = a.transient ? 'pending' : a.needsReview ? 'review' : a.route!.id, expected = (labels && Object.hasOwn(labels, name.normalize('NFC')) ? labels[name.normalize('NFC')] : null) ?? null;
   const verdict: EvalRow['verdict'] = expected === null ? 'unlabeled' : got === expected ? 'correct' : got === 'review' || got === 'pending' ? 'review_instead' : expected === 'review' ? 'auto_instead_of_review' : 'misrouted';
   if (calls > 0) { if (cold === null) { cold = classifyMs; coldCall = callTotal; } else modelCallMs.push(callTotal); }
   extractMs.push(ex);
@@ -76,7 +91,7 @@ export async function evaluate(dir: string, config: Config, labels: Labels | nul
  const labeledRows = rows.filter(r => r.verdict !== 'unlabeled'), count = (v: EvalRow['verdict']) => rows.filter(r => r.verdict === v).length;
  const ruleTierStats = statsPrecise(rows.filter(r => r.tier === 'rule').map(r => r.routeMs));
  return {
-  files: rows.length, capped, distribution, unmatchedLabels: labels ? Object.keys(labels).filter(k => !names.includes(k)).sort() : [], reviewRate: rows.length ? (distribution.review ?? 0) / rows.length : 0, labeled: labeledRows.length,
+  files: rows.length, capped, helperWarnings, distribution, unmatchedLabels: labels ? Object.keys(labels).filter(k => !names.some(n => n.normalize('NFC') === k.normalize('NFC'))).sort() : [], reviewRate: rows.length ? (distribution.review ?? 0) / rows.length : 0, labeled: labeledRows.length,
   accuracy: labeledRows.length ? count('correct') / labeledRows.length : null, correct: count('correct'), misrouted: count('misrouted'), reviewInstead: count('review_instead'), autoInsteadOfReview: count('auto_instead_of_review'),
   latency: {
    extraction: stats(extractMs),
@@ -94,6 +109,7 @@ export function formatReport(r: EvalReport): string {
  const ms = (s: Stats) => s.n ? `n=${s.n} median ${s.medianMs}ms p95 ${s.p95Ms}ms max ${s.maxMs}ms` : 'n/a';
  const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
  const lines = [`Files: ${r.files}   review rate: ${pct(r.reviewRate)}   routes: ${Object.entries(r.distribution).sort().map(([k, v]) => `${k}=${v}`).join(' ') || '-'}`];
+ for (const w of r.helperWarnings) lines.unshift(`⚠⚠ WARNING: ${w}`);
  if (r.capped) lines.push(`WARNING: the folder has ${r.capped.total} files; only the first ${r.capped.evaluated} were evaluated (raise --max-files to see more).`);
  if (r.unmatchedLabels.length) lines.push(`WARNING: ${r.unmatchedLabels.length} label(s) match no file in the folder and are ignored: ${r.unmatchedLabels.join(', ')}`);
  if (r.labeled) lines.push(`Accuracy vs labels: ${r.correct}/${r.labeled} (${pct(r.accuracy!)})   wrong auto-route: ${r.misrouted}   auto-routed but expected review: ${r.autoInsteadOfReview}   sent to review instead: ${r.reviewInstead - pendingLabeled(r)}${pendingLabeled(r) ? `   NOT evaluated (pending: model unavailable, busy or timed out): ${pendingLabeled(r)}` : ''}`);
