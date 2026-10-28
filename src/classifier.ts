@@ -1,4 +1,4 @@
-import { routePatterns, type Config, type Route } from './config';
+import { routeEvidence, routePatterns, type Config, type Route } from './config';
 import { DATE_PREFIX_FOLDERS, extractNaming } from './naming';
 import { HelperError, run } from './process';
 
@@ -44,8 +44,16 @@ export function validateResult(raw: unknown, config: Config): Decision {
  * Tier 1: the route whose patterns match as whole words, only when exactly ONE route matches. A single hit is final (no model check;
  * accepted risk: any text in the document, including hidden text, can steer a rule route). Conflicts and no match go to the model.
  */
+const matchWindow = (filename: string, text: string) => `${filename}\n${text.slice(0, 20000)}`.normalize('NFC'); // patterns are written NFC; HFS-era names / some OCR output are NFD
+/** A route without `evidence` is always verified; one with `evidence` needs at least one whole-word hit in the file name or the first 20k characters. Never used for Tier 1. */
+export function routeVerified(route: Route, filename: string, text: string): boolean {
+ const ev = routeEvidence(route);
+ if (!ev.length) return true;
+ const input = matchWindow(filename, text);
+ return ev.some(re => re.test(input));
+}
 export function heuristics(filename: string, text: string, config: Config): Route | null {
- const input = `${filename}\n${text.slice(0, 20000)}`.normalize('NFC'); // patterns are written NFC; HFS-era names / some OCR output are NFD
+ const input = matchWindow(filename, text);
  const hits = config.routes.filter(r => routePatterns(r).some(re => re.test(input)));
  return hits.length === 1 ? hits[0]! : null;
 }
@@ -113,6 +121,9 @@ export async function classify(filename: string, text: string, config: Config, d
   if (m.kind === 'transient') return { ...review(m.reason, true), ...timing };
   if (m.kind === 'failed') return { ...review(m.reason), ...timing };
   if (m.result.needsReview) return { ...review('model_uncertain'), ...timing };
+  // Deterministic check of the model's choice: a route with `evidence` (e.g. the model-only admin root) is accepted only when the document itself carries evidence for it.
+  const chosen = config.routes.find(r => r.id === m.result.route);
+  if (chosen && !routeVerified(chosen, filename, text)) return { ...review(`model_route_unverified:${chosen.id}`), ...timing };
   return { route: m.result.route, tier: 'model', needsReview: false, reason: 'model_suggestion', transient: false, documentDate: m.result.documentDate, sender: m.result.sender, ...timing };
  }
  // A rule hit is instant and final: the route is fixed here. Only the file NAME may still need the model.
