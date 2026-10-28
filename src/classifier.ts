@@ -52,11 +52,23 @@ export function routeVerified(route: Route, filename: string, text: string): boo
  const input = matchWindow(filename, text);
  return ev.some(re => re.test(input));
 }
-export function heuristics(filename: string, text: string, config: Config): Route | null {
- const input = matchWindow(filename, text);
- const hits = config.routes.filter(r => routePatterns(r).some(re => re.test(input)));
- return hits.length === 1 ? hits[0]! : null;
+export interface RuleHit { route: Route; byFilename: boolean }
+/**
+ * Tier 1 with the filename tiebreak (round 11): the routes whose patterns match the file name + text. Exactly one -> final (`rule_match`).
+ * Several (a conflict) -> if the FILENAME alone matches exactly one of THOSE routes, that route wins (`rule_match_filename`); a filename that
+ * matches none or more than one of them leaves the conflict to the model. The tiebreak never picks a route the text does not match.
+ * Trade-off: the file name (user-controlled, but also steerable by a sender) now steers conflicts; it cannot create a hit by itself.
+ */
+export function ruleMatch(filename: string, text: string, config: Config): RuleHit | null {
+ const win = matchWindow(filename, text), hits = config.routes.filter(r => routePatterns(r).some(re => re.test(win)));
+ if (hits.length === 1) return { route: hits[0]!, byFilename: false };
+ if (hits.length < 2) return null;
+ // Tiebreak: only among the routes the TEXT matches (a route matched by the file name alone never wins this way), and only when the name picks exactly one of them.
+ const body = text.slice(0, 20000).normalize('NFC'), name = filename.normalize('NFC');
+ const named = hits.filter(r => routePatterns(r).some(re => re.test(body)) && routePatterns(r).some(re => re.test(name)));
+ return named.length === 1 ? { route: named[0]!, byFilename: true } : null;
 }
+export const heuristics = (filename: string, text: string, config: Config): Route | null => ruleMatch(filename, text, config)?.route ?? null;
 /** `lockedRoute`: the route is already decided by a rule; the model may only fill in date/sender. */
 export type ModelCall = (filename: string, text: string, config: Config, lockedRoute?: string | null) => Promise<unknown>;
 export const MODEL_TEXT_LIMIT = 2400;
@@ -116,20 +128,20 @@ export const wantsNaming = (route: Route, config: Config) => route.rename || (co
 const now = () => performance.now();
 export async function classify(filename: string, text: string, config: Config, deps: ClassifyDeps = {}): Promise<Decision> {
  if (!text.trim()) return review('empty_text');
- const t0 = now(), rule = heuristics(filename, text, config), routeMs = now() - t0;
+ const t0 = now(), hit = ruleMatch(filename, text, config), rule = hit?.route ?? null, routeMs = now() - t0;
  if (!rule) {
   const m = await callModel(filename, text, config, deps, null);
   const timing = { routeMs: now() - t0, namingMs: 0, modelCalls: 1 };
   if (m.kind === 'transient') return { ...review(m.reason, true), ...timing };
   if (m.kind === 'failed') return { ...review(m.reason), ...timing };
   if (m.result.needsReview) return { ...review('model_uncertain'), ...timing };
-  // Deterministic check of the model's choice: a route with `evidence` (e.g. the model-only admin root) is accepted only when the document itself carries evidence for it.
+  // Deterministic check of the model's choice: a route with `evidence` (e.g. the admin root) is accepted only when the document itself carries evidence for it.
   const chosen = config.routes.find(r => r.id === m.result.route);
   if (chosen && !routeVerified(chosen, filename, text)) return { ...review(`model_route_unverified:${chosen.id}`), ...timing };
   return { route: m.result.route, tier: 'model', needsReview: false, reason: 'model_suggestion', transient: false, documentDate: m.result.documentDate, sender: m.result.sender, ...timing };
  }
  // A rule hit is instant and final: the route is fixed here. Only the file NAME may still need the model.
- const base: Decision = { route: rule.id, tier: 'rule', needsReview: false, reason: 'rule_match', transient: false, documentDate: null, sender: null, routeMs, namingMs: 0, modelCalls: 0 };
+ const base: Decision = { route: rule.id, tier: 'rule', needsReview: false, reason: hit!.byFilename ? 'rule_match_filename' : 'rule_match', transient: false, documentDate: null, sender: null, routeMs, namingMs: 0, modelCalls: 0 };
  if (!wantsNaming(rule, config)) return base;
  const t1 = now(), det = extractNaming(text, rule, config);
  const missing = !det.date || (rule.rename && !det.sender);
