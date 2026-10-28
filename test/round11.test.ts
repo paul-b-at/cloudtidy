@@ -27,18 +27,17 @@ test('R11 tiebreak: a file name that matches none or more than one of the confli
  const text = 'Rechnung zur Tierhaftpflichtversicherung, Polizze 1';
  expect(ruleMatch('scan.pdf', text, config)).toBeNull();
  expect(ruleMatch('Rechnung Vertrag.pdf', text, config)).toBeNull();                         // two of the conflicting routes match the name
- expect(ruleMatch('Kontoauszug.pdf', text, config)).toBeNull();                              // the name matches a route that the text does NOT match: never picked
- expect(ruleMatch('Kontoauszug Vertrag.pdf', text, config)).toMatchObject({ route: { id: 'contracts' }, byFilename: true }); // bank is ignored, contracts is the only conflicting route named
+ expect(ruleMatch('Kontoauszug Vertrag.pdf', text, config)).toBeNull();                    // round 12: the name matches two routes (bank, contracts) -> still the model
  expect(ruleMatch('Vertrag.pdf', 'nothing relevant here', config)).toMatchObject({ route: { id: 'contracts' }, byFilename: false }); // the file name is part of the match window (as before): a lone hit is a plain rule_match
 });
-test('R11 tiebreak never creates a hit and never picks a route the text does not match', () => {
+test('R11 tiebreak never creates a hit; since round 12 it may pick a route the text does not match (only the file name alone matters)', () => {
  expect(ruleMatch('Vertrag.pdf', 'x', config)?.byFilename).toBe(false);
- expect(ruleMatch('Vertrag.pdf', 'Rechnung 5 Betrag', config)).toBeNull(); // the text matches invoices only, the name only contracts: contracts is not text-matched, so no tiebreak -> model
+ expect(ruleMatch('Vertrag.pdf', 'Rechnung 5 Betrag', config)).toMatchObject({ route: { id: 'contracts' }, byFilename: true }); // round 12 (flipped): the text matches invoices only, the name contracts only -> contracts
  expect(ruleMatch('foto.jpg', 'Rechnung 5', config)).toMatchObject({ route: { id: 'invoices' }, byFilename: false });
 });
 test('R11 admin Tier-1 patterns: strong authority markers fire; weak words (and the evidence-only words) do not', () => {
- for (const t of ['Bezirksgericht Liesing', 'des Bezirksgerichtes', 'Landesgericht Linz', 'Oberlandesgericht Wien', 'Verwaltungsgericht', 'Bundesverwaltungsgericht', 'Pflegschaftsgericht', 'Familienrechtssache', 'Bezirkshauptmannschaft Linz', 'Magistrat Wien', 'Magistratsabteilung 35', 'Sozialversicherungsanstalt', 'Gesundheitskasse', 'SVS', 'ÖGK', 'Unterhalt', 'Unterhaltserhöhung', 'Unterhaltsvorschuss']) expect(hit('admin', t), t).toBe(true);
- for (const t of ['admin', 'Amt', 'Behörde', 'Bescheid', 'Gericht', 'Beschluss', 'Polizei', 'Unfallbericht', 'Landesregierung', 'AUVA', 'Unterhaltung', 'Unterhaltungselektronik', 'SVSX', 'Bezirksgerichtsgebäude']) expect(hit('admin', t), t).toBe(false);
+ for (const t of ['Bezirksgericht Liesing', 'des Bezirksgerichtes', 'Landesgericht Linz', 'Oberlandesgericht Wien', 'Verwaltungsgericht', 'Bundesverwaltungsgericht', 'Pflegschaftsgericht', 'Familienrechtssache', 'Bezirkshauptmannschaft Linz', 'Magistrat Wien', 'Magistratsabteilung 35', 'Sozialversicherungsanstalt', 'Gesundheitskasse', 'SVS', 'ÖGK', 'Unterhaltserhöhung', 'Unterhaltsanspruch', 'Unterhaltsansprüche', 'Unterhaltsvorschuss', 'Unterhalt Minderjähriger', 'Kindesunterhalt', 'Geldunterhalt', 'Unfallbericht', 'Unfallmeldung']) expect(hit('admin', t), t).toBe(true);
+ for (const t of ['admin', 'Amt', 'Behörde', 'Bescheid', 'Gericht', 'Beschluss', 'Polizei', 'Landesregierung', 'AUVA', 'Unterhalt', 'Unterhaltsarbeiten', 'Unterhaltskosten', 'Unterhaltung', 'Unterhaltungselektronik', 'SVSX', 'Bezirksgerichtsgebäude']) expect(hit('admin', t), t).toBe(false);
  expect(route('admin').evidence!.length).toBeLessThanOrEqual(16); expect(route('admin').description).not.toMatch(/model-only/i);
 });
 test('R11 admin vs contracts: SVS/ÖGK/Sozialversicherung words are admin by rule and never contracts; a real insurance contract naming the ÖGK is a conflict for the model', () => {
@@ -84,7 +83,7 @@ test('R11 eval:fixtures with an always-review mock: the four new documents; inje
  expect(got(COURT).got).toBe('review');
  expect(got('rechnung_und_mietvertrag_gemischt.txt').got).toBe('review'); // the name matches both conflicting routes
  for (const f of r.report.rows.filter(x => x.file.startsWith('inj_'))) expect(['review', f.expected]).toContain(f.got);
- expect(r.report.files).toBe(36); expect(r.unsafe).toEqual([]);
+ expect(r.report.files).toBe(38); expect(r.unsafe).toEqual([]);
  const always = await runFixtureEval(config, { model: says('admin') });
  expect(always.report.rows.find(x => x.file === COURT)!.got).toBe('admin'); expect(always.report.rows.find(x => x.file === 'inj_route_force_nomatch.txt')!.got).toBe('review');
 });
@@ -92,13 +91,13 @@ test('R11 follow-up: patterns cannot span the file name / text boundary (name an
  // multi-word course name split between name and text, "VO" at the end of the name + the number at the start of the text, a name ending in K + digits first in the text
  expect(ruleMatch('Computational', 'Logic und mehr', config)).toBeNull();
  expect(ruleMatch('Mathematics for', 'AI 2 und mehr', config)).toBeNull();
- expect(ruleMatch('Skript VO', '123.456 Algorithmen', config)).toBeNull();
+ expect(ruleMatch('Skript VO', '123.456 und mehr', config)).toBeNull();
  expect(ruleMatch('Notizen K', '12345678 und mehr', config)).toBeNull();
  expect(ruleMatch('Skript.pdf', 'K 12345678', config)).toBeNull();
  // but each part alone still matches, and so does the union of both
  expect(ruleMatch('Computational Logic.pdf', 'x', config)).toMatchObject({ route: { id: 'uni' }, byFilename: false });
  expect(ruleMatch('x.pdf', 'Computational Logic', config)).toMatchObject({ route: { id: 'uni' } });
- expect(ruleMatch('Vertrag.pdf', 'Exercise Sheet 7', config)).toBeNull();                      // name: contracts, text: uni -> conflict, the name picks a route the text does not match -> model
+ expect(ruleMatch('Vertrag.pdf', 'Exercise Sheet 7', config)).toMatchObject({ route: { id: 'contracts' }, byFilename: true }); // round 12: name contracts, text uni -> the name decides
  expect(ruleMatch('Rechnung_Mai.pdf', 'Rechnung zur Tierhaftpflichtversicherung, Polizze 1', config)).toMatchObject({ route: { id: 'invoices' }, byFilename: true }); // tiebreak unchanged
  // evidence is checked per part as well: a file name word or a text word is enough, nothing spans
  const admin = config.routes.find(r => r.id === 'admin')!;

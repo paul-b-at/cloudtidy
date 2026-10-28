@@ -33,8 +33,8 @@ test('R8 the forced-route injection (fixture inj_route_force_nomatch) answered `
   expect(await readdir(sb.review)).toEqual(['note.txt']); expect(await readdir(join(sb.root, '02_Admin & Finanzen'))).not.toContain('note.txt');
  } finally { await sb.cleanup(); }
 });
-test('R8 a model-only admin letter (accident report) answered `admin` by the model is accepted (it carries evidence)', async () => {
- const text = await fx('unfallbericht_kfz_beispiel.txt');
+test('R8 a model-only admin letter (court decision that mentions a university) answered `admin` by the model is accepted (it carries evidence)', async () => {
+ const text = await fx('gerichtsschreiben_studium_beispiel.txt');
  expect(heuristics('unfall.txt', text, config)).toBeNull();
  expect(await classify('unfall.txt', text, config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'model', needsReview: false, reason: 'model_suggestion' });
  const sb = await sandbox(); try {
@@ -51,7 +51,7 @@ test('R8 eval:fixtures with a model that answers `admin` for everything: the inj
  for (const row of r.report.rows) if (row.tier === 'model' && row.got === 'admin') expect(routeVerified(route('admin'), row.file, await fx(row.file)), row.file).toBe(true);
 });
 test('R8 evidence-only words never fire Tier 1 and do not count as a pattern match (round 11: the strong markers do, as patterns)', () => {
- for (const t of ['AUVA Beitragsvorschreibung', 'Bescheid der Landesregierung', 'Polizeiinspektion Urfahr Amt', 'Versicherungsnummer 1234 Beschluss', 'Unfallbericht']) expect(heuristics('x.txt', t, config), t).toBeNull();
+ for (const t of ['AUVA Beitragsvorschreibung', 'Bescheid der Landesregierung', 'Polizeiinspektion Urfahr Amt', 'Versicherungsnummer 1234 Beschluss']) expect(heuristics('x.txt', t, config), t).toBeNull();
  expect(heuristics('x.txt', 'Kontoauszug und AUVA Bescheid', config)?.id).toBe('bank'); // evidence words next to a real pattern do not create a conflict
  expect(heuristics('x.txt', 'Steuerbescheid 2025', config)?.id).toBe('tax');
 });
@@ -84,7 +84,7 @@ test('R8 notiz_unklar ("Er weiß schon Bescheid") answered `admin` by the model 
  expect(text).toContain('Bescheid'); expect(heuristics(NOTIZ, text, config)).toBeNull();
  expect(await classify(NOTIZ, text, config, { model: says('admin') })).toMatchObject({ route: null, needsReview: true, reason: 'model_route_unverified:admin' });
  expect(await classify(SVS, await fx(SVS), config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'rule' }); // round 11: the SVS letter is a rule hit
- expect(await classify('u.txt', await fx('unfallbericht_kfz_beispiel.txt'), config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'model' });
+ expect(await classify('u.txt', await fx('gerichtsschreiben_studium_beispiel.txt'), config, { model: says('admin') })).toMatchObject({ route: 'admin', tier: 'model' });
  const r = await runFixtureEval(config, { model: says('admin') });
  expect(r.report.rows.find(x => x.file === NOTIZ)!.got).toBe('review'); expect(r.report.rows.find(x => x.file === SVS)!.got).toBe('admin');
 });
