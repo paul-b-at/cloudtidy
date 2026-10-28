@@ -113,7 +113,7 @@
       "patterns": [
         "VO\\s+\\d{3}\\.\\d{3}|UE\\s+\\d{3}\\.\\d{3}|JKU|K\\d{8}",
         "Übungsblatt|Übungsblätter|Übungszettel|Exercise\\s+sheets?|Exercise\\s+Sheet\\s*\\d+|Assignment\\s+\\d+|Lecture\\s+notes|Johannes\\s+Kepler|Moodle",
-        "Mathematics\\s+for\\s+AI|Computational\\s+Logic|Algorithms\\s+and\\s+Data\\s+Structures|Programming\\s+in\\s+Python|Machine\\s+Learning\\s+(?:and|&)\\s+Pattern\\s+Classification|Statistics\\s+for\\s+AI|Introduction\\s+to\\s+(?:AI|Artificial\\s+Intelligence)|Formal\\s+Languages"
+        "Mathematics\\s+for\\s+AI|Comp(?:utational)?\\s+Logic|Algorithms\\s+and\\s+Data\\s+Structures|Programming\\s+in\\s+Python|Machine\\s+Learning\\s+(?:and|&)\\s+Pattern\\s+Classification|Statistics\\s+for\\s+AI|Introduction\\s+to\\s+(?:AI|Artificial\\s+Intelligence)|Formal\\s+Languages|Algo|Algorithmen|Algorithms"
       ]
     },
     {
@@ -170,7 +170,8 @@
       "rename": false,
       "patterns": [
         "(?:Bezirks|Landes|Oberlandes|Verwaltungs|Bundesverwaltungs|Pflegschafts)gericht(?:s|es)?|Familienrechtssache|Bezirkshauptmannschaft|Magistrat(?:s\\p{L}*)?",
-        "Sozialversicherungsanstalt|Gesundheitskasse|SVS|ÖGK|Unterhalt(?:s\\p{L}*)?"
+        "Sozialversicherungsanstalt|Gesundheitskasse|SVS|ÖGK|Unterhalts(?:erhöhung|anspruch|ansprüche|vereinbarung|pflicht|betrag|leistung|festsetzung|sache|verfahren|bemessung|vorschuss)|Unterhalt\\s+(?:Volljähriger|Minderjähriger)|Kindesunterhalt|Geldunterhalt",
+        "Unfallbericht|Unfallmeldung"
       ],
       "evidence": [
         "Sozialversicherung\\p{L}*",
@@ -187,7 +188,7 @@
         "Beschluss",
         "Polizei\\p{L}*|Landespolizeidirektion",
         "Unfallbericht|Unfallmeldung",
-        "Familienrechtssache|Unterhalt(?:s\\p{L}*)?"
+        "Familienrechtssache|Unterhalts(?:erhöhung|anspruch|ansprüche|vereinbarung|pflicht|betrag|leistung|festsetzung|sache|verfahren|bemessung|vorschuss)|Unterhalt\\s+(?:Volljähriger|Minderjähriger)|Kindesunterhalt|Geldunterhalt"
       ]
     },
     {

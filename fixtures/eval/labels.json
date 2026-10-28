@@ -34,5 +34,7 @@
   "gerichtsschreiben_studium_beispiel.txt": "admin",
   "handschrift_ocr_k_nummer.txt": "uni",
   "Lebenslauf_Maria_Muster.txt": "personal",
-  "Bello_Vertrag_Tierhaftpflicht.txt": "contracts"
+  "Bello_Vertrag_Tierhaftpflicht.txt": "contracts",
+  "Reisepass_scan_beispiel.txt": "personal",
+  "Gescanntes_Dokument_Kran_Wartung.txt": "contracts"
 }
