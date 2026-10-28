@@ -25,7 +25,8 @@ Usage: bun src/cli.ts <command> [options]
 
 Commands
   classify <file>                 Classify one file (read-only, any path). Prints route, destination, tier, reason, naming and, when a
-                                  rule hit kept the original name, namingReason (e.g. naming_model_refusal).
+                                  rule hit kept the original name, namingReason (e.g. naming_model_refusal), plus "rules": which routes matched in the
+                                  file name vs the text and the keyword (local diagnostics, never logged).
   scan --dry-run                  Preview what would happen to ${INBOX} as JSON (same debounce as run; no lock, cache or state writes).
   run [--apply] [--no-cache] [--json] [--verbose]
                                   One ${INBOX} pass: debounce, classify, (with --apply) move + audit-log. Files that are unstable, empty or
@@ -48,9 +49,10 @@ Commands
                                   bun defaults to ~/.bun/bin/bun (then /opt/homebrew/bin/bun), never a versioned Cellar path.
   uninstall                       Unload and remove the LaunchAgent (history, cache, logs are kept).
   status                          LaunchAgent state, last run, model availability in the LaunchAgent context, lock, history size.
-  eval <dir> [--expected labels.json] [--max-files N] [--json]
+  eval <dir> [--expected labels.json] [--max-files N] [--json] [--verbose]
                                   Read-only batch report over a folder (default cap 500 files, dotfiles and the labels file are skipped): route
                                   distribution, review rate, accuracy vs labels, rule-tier routing latency (flags p95 > 10 ms) and naming/model latency.
+                                  --verbose adds one "rules:" line per file (matched routes, name vs text, keyword).
   doctor [--json]                 Environment checks: native arm64 (not Rosetta), helpers, model, _Inbox, full taxonomy (buckets, sub-folders,
                                   Needs_Review), exclusive rename probe on the iCloud volume, run time budget, LaunchAgent, last run, journal.
 
@@ -201,13 +203,13 @@ async function main() {
    return;
   }
   case 'eval': {
-   const { flags, values, pos } = parse(argv, { flags: ['--json'], values: ['--expected', '--max-files'], positionals: 1 });
-   if (!pos[0]) throw new UsageError('eval <dir> [--expected labels.json] [--max-files N]');
+   const { flags, values, pos } = parse(argv, { flags: ['--json', '--verbose'], values: ['--expected', '--max-files'], positionals: 1 });
+   if (!pos[0]) throw new UsageError('eval <dir> [--expected labels.json] [--max-files N] [--verbose]');
    const max = values['--max-files'] === undefined ? undefined : Number(values['--max-files']);
    if (max !== undefined && (!Number.isInteger(max) || max < 1 || max > 100000)) throw new UsageError('--max-files must be a positive integer');
    if (!(await stat(pos[0]).catch(() => null))?.isDirectory()) throw Error(`eval: not a readable folder: ${show(pos[0])}`);
    const labels = values['--expected'] ? await readLabels(values['--expected'], c) : null;
-   const r = await evaluate(pos[0], c, labels, {}, values['--expected'] ? [resolve(values['--expected'])] : [], { maxFiles: max });
+   const r = await evaluate(pos[0], c, labels, {}, values['--expected'] ? [resolve(values['--expected'])] : [], { maxFiles: max, verbose: flags.has('--verbose') });
    return out(flags.has('--json') ? JSON.stringify(r, null, 2) : formatReport(r));
   }
   case 'doctor': {

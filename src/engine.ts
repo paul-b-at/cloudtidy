@@ -1,6 +1,6 @@
 import { basename, join, relative, sep } from 'node:path';
 import { INBOX, REVIEW, safeName, type Config, type Route } from './config';
-import { callHelper, classify, wantsNaming, type ClassifyDeps, type Decision, type ModelCall, type Tier } from './classifier';
+import { callHelper, classify, explainRules, formatRuleTrace, wantsNaming, type ClassifyDeps, type Decision, type ModelCall, type Tier } from './classifier';
 import { ExtractError, extract as realExtract } from './extract';
 import { fingerprint, sha256File, type Fingerprint, type RenameOptions } from './fsx';
 import { makeJournal, type Outcome } from './history';
@@ -12,6 +12,8 @@ import { DecisionCache, HeldStore } from './state';
 import { BUSY_CAP, MIN_APPLY_ATTEMPTS, type PendingEntry, type PendingStore } from './pending';
 
 export interface Analysis {
+ /** Only with `deps.trace`: which routes matched in the file name vs the text (keywords sanitized), for local CLI output. */
+ rules?: string;
  route: Route | null; tier: Tier; needsReview: boolean; reason: string;
  /** The model was unavailable/busy/timed out: the file stays in `_Inbox` as pending and is retried later. */
  transient: boolean;
@@ -20,7 +22,7 @@ export interface Analysis {
  note?: string;
  routeMs?: number; namingMs?: number; modelCalls?: number;
 }
-export interface AnalyzeDeps extends ClassifyDeps { cache?: DecisionCache | null; held?: HeldStore | null; extract?: (file: string, config: Config) => Promise<string> }
+export interface AnalyzeDeps extends ClassifyDeps { cache?: DecisionCache | null; held?: HeldStore | null; extract?: (file: string, config: Config) => Promise<string>; /** Diagnostics for local CLI output (`classify <file>`, `eval --verbose`): attach the Tier-1 keyword trace. Never persisted. */ trace?: boolean }
 const heldAnalysis = (name: string): Analysis => ({ route: null, tier: 'none', needsReview: true, reason: 'held_after_undo', transient: false, name, renamed: false, cached: true, held: true });
 const reviewAnalysis = (name: string, reason: string): Analysis => ({ route: null, tier: 'none', needsReview: true, reason, transient: false, name, renamed: false, cached: false, held: false });
 /** Extraction + two-tier classification + deterministic naming. Never touches the filesystem except reading `file`. */
@@ -47,7 +49,7 @@ export async function analyze(file: string, name: string, sha256: string | null,
  const route = d.route ? config.routes.find(r => r.id === d.route) ?? null : null;
  const named = route && !d.needsReview && !d.transient ? targetName({ filename: name, text, route, documentDate: d.documentDate, sender: d.sender }, config) : { name, renamed: false, reason: '' };
  const note = route && !d.needsReview && !d.transient && !named.renamed && wantsNaming(route, config) ? d.namingReason ?? named.reason : undefined;
- const a: Analysis = { route: d.needsReview || d.transient ? null : route, tier: d.tier, needsReview: !d.transient && (d.needsReview || !route), reason: d.reason, transient: d.transient, name: named.name, renamed: named.renamed, cached: false, held: false, routeMs: d.routeMs, namingMs: d.namingMs, modelCalls: d.modelCalls, ...(note ? { note } : {}) };
+ const a: Analysis = { route: d.needsReview || d.transient ? null : route, tier: d.tier, needsReview: !d.transient && (d.needsReview || !route), reason: d.reason, transient: d.transient, name: named.name, renamed: named.renamed, cached: false, held: false, routeMs: d.routeMs, namingMs: d.namingMs, modelCalls: d.modelCalls, ...(note ? { note } : {}), ...(deps.trace && text ? { rules: formatRuleTrace(explainRules(name, text, config)) } : {}) };
  if (sha256 && deps.cache && !a.transient) deps.cache.set(sha256, name, { route: a.route?.id ?? null, name: a.name, tier: a.tier, reason: a.reason, needsReview: a.needsReview, renamed: a.renamed, ...(note ? { note } : {}) });
  return a;
 }
